@@ -15,6 +15,11 @@ type RunResult struct {
 	Events     []event.Event `json:"events"`
 }
 
+const (
+	StopReasonComplete      = "complete"
+	StopReasonMaxIterations = "max_iterations"
+)
+
 // TokenUsage holds lightweight token accounting numbers.
 type TokenUsage struct {
 	InputTokens  int `json:"input_tokens"`
@@ -25,6 +30,7 @@ type TokenUsage struct {
 
 // ToolCall records a single invocation of a registered tool.
 type ToolCall struct {
+	ID       string         `json:"id,omitempty"`
 	Name     string         `json:"name"`
 	Params   map[string]any `json:"params"`
 	Output   any            `json:"output"`

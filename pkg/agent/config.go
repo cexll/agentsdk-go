@@ -6,16 +6,27 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
+
+	"github.com/cexll/agentsdk-go/pkg/event"
 )
 
-const defaultStreamBuffer = 4
+const (
+	defaultStreamBuffer    = 4
+	defaultToolTimeout     = 5 * time.Minute
+	defaultWatchdogTimeout = 5 * time.Minute
+)
 
 // Config stores the coarse grained runtime settings for an Agent instance.
 type Config struct {
-	Name           string     `json:"name" yaml:"name"`
-	Description    string     `json:"description" yaml:"description"`
-	DefaultContext RunContext `json:"default_context" yaml:"default_context"`
-	StreamBuffer   int        `json:"stream_buffer" yaml:"stream_buffer"`
+	Name            string           `json:"name" yaml:"name"`
+	Description     string           `json:"description" yaml:"description"`
+	DefaultContext  RunContext       `json:"default_context" yaml:"default_context"`
+	StreamBuffer    int              `json:"stream_buffer" yaml:"stream_buffer"`
+	EnableRecovery  bool             `json:"enable_recovery" yaml:"enable_recovery"`
+	ToolTimeout     time.Duration    `json:"tool_timeout" yaml:"tool_timeout"`
+	WatchdogTimeout time.Duration    `json:"watchdog_timeout" yaml:"watchdog_timeout"`
+	EventStore      event.EventStore `json:"-" yaml:"-"`
 }
 
 // LoadConfig loads and validates configuration from disk.
@@ -54,6 +65,12 @@ func (c *Config) Validate() error {
 	if c.StreamBuffer < 0 {
 		return fmt.Errorf("stream_buffer cannot be negative: %d", c.StreamBuffer)
 	}
+	if c.ToolTimeout < 0 {
+		return fmt.Errorf("tool_timeout cannot be negative: %s", c.ToolTimeout)
+	}
+	if c.WatchdogTimeout < 0 {
+		return fmt.Errorf("watchdog_timeout cannot be negative: %s", c.WatchdogTimeout)
+	}
 	c.DefaultContext = c.DefaultContext.Normalize()
 	return nil
 }
@@ -68,4 +85,24 @@ func (c Config) streamBuffer() int {
 		return defaultStreamBuffer
 	}
 	return c.StreamBuffer
+}
+
+func (c Config) toolTimeout() time.Duration {
+	if c.ToolTimeout <= 0 {
+		return defaultToolTimeout
+	}
+	return c.ToolTimeout
+}
+
+func (c Config) watchdogTimeout() time.Duration {
+	if !c.EnableRecovery {
+		return 0
+	}
+	if c.WatchdogTimeout <= 0 {
+		return defaultWatchdogTimeout
+	}
+	if c.WatchdogTimeout < time.Second {
+		return time.Second
+	}
+	return c.WatchdogTimeout
 }

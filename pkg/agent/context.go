@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	defaultMaxIterations = 1
+	defaultMaxIterations = 10
 	defaultTemperature   = 0.7
 )
 
