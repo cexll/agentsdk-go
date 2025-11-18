@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -14,210 +14,110 @@ import (
 
 	"github.com/cexll/agentsdk-go/pkg/api"
 	modelpkg "github.com/cexll/agentsdk-go/pkg/model"
-	"github.com/cexll/agentsdk-go/pkg/sandbox"
-	"github.com/cexll/agentsdk-go/pkg/tool"
-	toolbuiltin "github.com/cexll/agentsdk-go/pkg/tool/builtin"
+)
+
+const (
+	defaultAddr        = ":8080"
+	defaultModel       = "claude-3-5-sonnet-20241022"
+	defaultRunTimeout  = 45 * time.Second
+	defaultMaxSessions = 500
+	minimalConfig      = "version: v0.0.1\ndescription: agentsdk-go CLI example\nenvironment: {}\n"
 )
 
 func main() {
-	cfg, err := loadAppConfig()
+	projectRoot, cleanup, err := resolveProjectRoot()
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		log.Fatalf("init project root: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 
-	server, err := newExampleServer(cfg.Server)
-	if err != nil {
-		log.Fatalf("init server: %v", err)
+	addr := getEnv("AGENTSDK_HTTP_ADDR", defaultAddr)
+	modelName := getEnv("AGENTSDK_MODEL", defaultModel)
+	defaultTimeout := getDuration("AGENTSDK_DEFAULT_TIMEOUT", defaultRunTimeout)
+	maxSessions := getInt("AGENTSDK_MAX_SESSIONS", defaultMaxSessions)
+
+	mode := api.ModeContext{
+		EntryPoint: api.EntryPointPlatform,
+		Platform: &api.PlatformContext{
+			Organization: "agentsdk-go",
+			Project:      "http-example",
+			Environment:  "dev",
+		},
 	}
 
-	mux := http.NewServeMux()
-	server.registerRoutes(mux)
+	opts := api.Options{
+		EntryPoint:   api.EntryPointPlatform,
+		ProjectRoot:  projectRoot,
+		Mode:         mode,
+		ModelFactory: &modelpkg.AnthropicProvider{ModelName: modelName},
+		MaxSessions:  maxSessions,
+	}
 
-	httpServer := &http.Server{
-		Addr:              cfg.Address,
-		Handler:           mux,
+	rt, err := api.New(context.Background(), opts)
+	if err != nil {
+		log.Fatalf("build runtime: %v", err)
+	}
+	defer rt.Close()
+
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           buildMux(rt, mode, defaultTimeout),
 		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       120 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {
-		log.Printf("HTTP agent server listening on %s", cfg.Address)
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Printf("HTTP agent server listening on %s", addr)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server stopped unexpectedly: %v", err)
 		}
 	}()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	<-ctx.Done()
+	<-sigCtx.Done()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("graceful shutdown failed: %v", err)
 	}
 	log.Println("server exited cleanly")
 }
 
-type appConfig struct {
-	Address string
-	Server  serverConfig
-}
-
-type serverConfig struct {
-	ProjectRoot    string
-	SandboxRoot    string
-	ModelFactory   api.ModelFactory
-	DefaultTimeout time.Duration
-	MaxTimeout     time.Duration
-	NetworkAllow   []string
-	ResourceLimit  sandbox.ResourceLimits
-	MaxBodyBytes   int64
-	MaxSessions    int
-}
-
-func newExampleServer(cfg serverConfig) (*exampleServer, error) {
-	if cfg.ModelFactory == nil {
-		return nil, errors.New("model factory is required")
-	}
-	projectRoot := normalizePath(cfg.ProjectRoot)
-	sandboxRoot := normalizePath(cfg.SandboxRoot)
-	if sandboxRoot == "" {
-		sandboxRoot = projectRoot
-	}
-	tools, executor, err := buildToolExecutor(projectRoot)
-	if err != nil {
-		return nil, err
-	}
-
-	maxSessions := cfg.MaxSessions
-	if maxSessions <= 0 {
-		maxSessions = 500
-	}
-
-	allowed := dedupStrings([]string{projectRoot, sandboxRoot})
-	baseOptions := api.Options{
-		EntryPoint:  api.EntryPointPlatform,
-		ProjectRoot: projectRoot,
-		Mode: api.ModeContext{
-			EntryPoint: api.EntryPointPlatform,
-			Platform: &api.PlatformContext{
-				Organization: "agentsdk-go",
-				Project:      "http-example",
-				Environment:  "dev",
-			},
-		},
-		ModelFactory: cfg.ModelFactory,
-		Tools:        tools,
-		MaxSessions:  maxSessions,
-		Sandbox: api.SandboxOptions{
-			Root:          sandboxRoot,
-			AllowedPaths:  allowed,
-			NetworkAllow:  dedupStrings(cfg.NetworkAllow),
-			ResourceLimit: cfg.ResourceLimit,
-		},
-	}
-
-	defaultTimeout := cfg.DefaultTimeout
-	if defaultTimeout <= 0 {
-		defaultTimeout = 45 * time.Second
-	}
-	maxTimeout := cfg.MaxTimeout
-	if maxTimeout <= 0 {
-		maxTimeout = 2 * time.Minute
-	}
-	if maxTimeout < defaultTimeout {
-		maxTimeout = defaultTimeout
-	}
-
-	maxBody := cfg.MaxBodyBytes
-	if maxBody <= 0 {
-		maxBody = defaultMaxBodyBytes
-	}
-
-	return &exampleServer{
-		baseOptions:    baseOptions,
-		toolExecutor:   executor,
+func buildMux(rt *api.Runtime, mode api.ModeContext, defaultTimeout time.Duration) *http.ServeMux {
+	srv := &httpServer{
+		runtime:        rt,
+		mode:           mode,
 		defaultTimeout: defaultTimeout,
-		maxTimeout:     maxTimeout,
-		maxBodyBytes:   maxBody,
-	}, nil
+	}
+	mux := http.NewServeMux()
+	srv.registerRoutes(mux)
+	return mux
 }
 
-func buildToolExecutor(projectRoot string) ([]tool.Tool, *tool.Executor, error) {
-	registry := tool.NewRegistry()
-	toolImpls := []tool.Tool{
-		toolbuiltin.NewBashToolWithRoot(projectRoot),
-		toolbuiltin.NewFileToolWithRoot(projectRoot),
-	}
-	for _, impl := range toolImpls {
-		if err := registry.Register(impl); err != nil {
-			return nil, nil, err
-		}
-	}
-	return toolImpls, tool.NewExecutor(registry, nil), nil
-}
-
-func loadAppConfig() (appConfig, error) {
-	addr := strings.TrimSpace(envDefault("AGENTSDK_HTTP_ADDR", ":8080"))
-	projectRoot := envPath("AGENTSDK_PROJECT_ROOT", ".")
-	sandboxRoot := envPath("AGENTSDK_SANDBOX_ROOT", projectRoot)
-	modelName := strings.TrimSpace(envDefault("AGENTSDK_MODEL", "claude-3-5-sonnet-20241022"))
-	defaultTimeout := envDuration("AGENTSDK_DEFAULT_TIMEOUT", 45*time.Second)
-	maxTimeout := envDuration("AGENTSDK_MAX_TIMEOUT", 2*time.Minute)
-	cpuLimit := envFloat("AGENTSDK_RESOURCE_CPU_PERCENT", 85)
-	memLimit := envMegabytes("AGENTSDK_RESOURCE_MEMORY_MB", 1536)
-	diskLimit := envMegabytes("AGENTSDK_RESOURCE_DISK_MB", 2048)
-	maxBody := int64(envUint("AGENTSDK_MAX_BODY_BYTES", uint64(defaultMaxBodyBytes)))
-	if maxBody <= 0 {
-		maxBody = defaultMaxBodyBytes
-	}
-	maxSessions := envUint("AGENTSDK_MAX_SESSIONS", 500)
-	if maxSessions == 0 {
-		maxSessions = 500
-	}
-	provider := &modelpkg.AnthropicProvider{
-		ModelName: modelName,
-		CacheTTL:  5 * time.Minute,
-	}
-	if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) == "" {
-		log.Println("warning: ANTHROPIC_API_KEY is not set; requests will fail until it is configured")
-	}
-
-	cfg := appConfig{
-		Address: addr,
-		Server: serverConfig{
-			ProjectRoot:    projectRoot,
-			SandboxRoot:    sandboxRoot,
-			ModelFactory:   provider,
-			DefaultTimeout: defaultTimeout,
-			MaxTimeout:     maxTimeout,
-			NetworkAllow:   envList("AGENTSDK_NETWORK_ALLOW", []string{"api.anthropic.com"}),
-			ResourceLimit: sandbox.ResourceLimits{
-				MaxCPUPercent:  cpuLimit,
-				MaxMemoryBytes: memLimit * 1024 * 1024,
-				MaxDiskBytes:   diskLimit * 1024 * 1024,
-			},
-			MaxBodyBytes: maxBody,
-			MaxSessions:  int(maxSessions),
-		},
-	}
-	return cfg, nil
-}
-
-func envDefault(key, fallback string) string {
+func getEnv(key, fallback string) string {
 	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 		return value
 	}
 	return fallback
 }
 
-func envPath(key, fallback string) string {
-	value := envDefault(key, fallback)
-	return normalizePath(value)
+func getInt(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	val, err := strconv.Atoi(raw)
+	if err != nil || val <= 0 {
+		return fallback
+	}
+	return val
 }
 
-func envDuration(key string, fallback time.Duration) time.Duration {
+func getDuration(key string, fallback time.Duration) time.Duration {
 	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {
 		return fallback
@@ -231,61 +131,32 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 	return fallback
 }
 
-func envFloat(key string, fallback float64) float64 {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return fallback
+func resolveProjectRoot() (string, func(), error) {
+	if root := strings.TrimSpace(os.Getenv("AGENTSDK_PROJECT_ROOT")); root != "" {
+		return root, nil, nil
 	}
-	if val, err := strconv.ParseFloat(raw, 64); err == nil {
-		return val
+	tmp, err := os.MkdirTemp("", "agentsdk-http-*")
+	if err != nil {
+		return "", nil, err
 	}
-	return fallback
+	cleanup := func() { _ = os.RemoveAll(tmp) }
+	if err := scaffoldMinimalConfig(tmp); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return tmp, cleanup, nil
 }
 
-func envUint(key string, fallback uint64) uint64 {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return fallback
+func scaffoldMinimalConfig(root string) error {
+	claudeDir := filepath.Join(root, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		return err
 	}
-	if val, err := strconv.ParseUint(raw, 10, 64); err == nil {
-		return val
+	configPath := filepath.Join(claudeDir, "config.yaml")
+	if _, err := os.Stat(configPath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
 	}
-	return fallback
-}
-
-func envMegabytes(key string, fallback uint64) uint64 {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return fallback
-	}
-	value := strings.ToLower(raw)
-	value = strings.TrimSuffix(value, "mb")
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return fallback
-	}
-	if val, err := strconv.ParseUint(value, 10, 64); err == nil {
-		return val
-	}
-	return fallback
-}
-
-func envList(key string, fallback []string) []string {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return fallback
-	}
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		value := strings.TrimSpace(part)
-		if value == "" {
-			continue
-		}
-		out = append(out, value)
-	}
-	if len(out) == 0 {
-		return fallback
-	}
-	return out
+	return os.WriteFile(configPath, []byte(minimalConfig), 0o644)
 }
