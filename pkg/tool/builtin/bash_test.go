@@ -91,6 +91,22 @@ func TestBashToolWorkdirValidation(t *testing.T) {
 	}
 }
 
+func TestBashToolMetadata(t *testing.T) {
+	tool := NewBashTool()
+	if tool.Name() == "" || tool.Description() == "" || tool.Schema() == nil {
+		t.Fatalf("metadata missing")
+	}
+}
+
+func TestDurationFromParamHelpers(t *testing.T) {
+	if dur, err := durationFromParam("2"); err != nil || dur != 2*time.Second {
+		t.Fatalf("string seconds parse failed: %v %v", dur, err)
+	}
+	if _, err := durationFromParam("bad"); err == nil {
+		t.Fatalf("expected parse error")
+	}
+}
+
 func TestBashToolTimeoutClamp(t *testing.T) {
 	skipIfWindows(t)
 	dir := cleanTempDir(t)

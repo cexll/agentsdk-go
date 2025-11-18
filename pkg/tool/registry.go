@@ -8,11 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
-
 	"github.com/cexll/agentsdk-go/pkg/mcp"
-	"github.com/cexll/agentsdk-go/pkg/telemetry"
 )
 
 // Registry keeps the mapping between tool names and implementations.
@@ -90,13 +86,8 @@ func (r *Registry) SetValidator(v Validator) {
 }
 
 // Execute runs a registered tool after optional schema validation.
-func (r *Registry) Execute(ctx context.Context, name string, params map[string]interface{}) (_ *ToolResult, err error) {
-	ctx, span := telemetry.StartSpan(ctx, "registry.tool",
-		trace.WithSpanKind(trace.SpanKindInternal),
-		trace.WithAttributes(telemetry.SanitizeAttributes(attribute.String("tool.name", strings.TrimSpace(name)))...),
-	)
-	defer telemetry.EndSpan(span, err)
 
+func (r *Registry) Execute(ctx context.Context, name string, params map[string]interface{}) (_ *ToolResult, err error) {
 	tool, err := r.Get(name)
 	if err != nil {
 		return nil, err
@@ -115,12 +106,7 @@ func (r *Registry) Execute(ctx context.Context, name string, params map[string]i
 	}
 
 	result, execErr := tool.Execute(ctx, params)
-	err = execErr
-	telemetry.RecordToolCall(ctx, telemetry.ToolData{
-		Name:  name,
-		Error: execErr,
-	})
-	return result, err
+	return result, execErr
 }
 
 // RegisterMCPServer discovers tools exposed by an MCP server and registers them.
@@ -205,8 +191,8 @@ func buildMCPTransport(ctx context.Context, spec string) (mcp.Transport, error) 
 	case strings.HasPrefix(spec, "http://"), strings.HasPrefix(spec, "https://"):
 		return mcp.NewSSETransport(ctx, mcp.SSEOptions{BaseURL: spec})
 	default:
-		if strings.HasPrefix(spec, "stdio://") {
-			spec = strings.TrimPrefix(spec, "stdio://")
+		if after, ok := strings.CutPrefix(spec, "stdio://"); ok {
+			spec = after
 		}
 		parts := strings.Fields(spec)
 		if len(parts) == 0 {

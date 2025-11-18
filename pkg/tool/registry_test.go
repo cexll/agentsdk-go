@@ -322,3 +322,27 @@ func marshalMust(v interface{}) json.RawMessage {
 	}
 	return data
 }
+
+func TestConvertMCPSchema(t *testing.T) {
+	jsonInput := json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}},"required":["x"]}`)
+	schema, err := convertMCPSchema(jsonInput)
+	if err != nil {
+		t.Fatalf("convert err: %v", err)
+	}
+	if schema.Type != "object" || len(schema.Required) != 1 {
+		t.Fatalf("unexpected schema: %#v", schema)
+	}
+
+	if _, err := convertMCPSchema(json.RawMessage(``)); err != nil {
+		t.Fatalf("empty raw should return nil, got %v", err)
+	}
+	if val, err := convertMCPSchema(nil); err != nil || val != nil {
+		t.Fatalf("nil raw should return nil, got %v %v", val, err)
+	}
+	if alt, err := convertMCPSchema(json.RawMessage(`{"properties":{"x":{"type":"number"}},"required":["x"]}`)); err != nil || alt == nil {
+		t.Fatalf("expected map-based schema, got %#v err=%v", alt, err)
+	}
+	if _, err := convertMCPSchema(json.RawMessage(`{`)); err == nil {
+		t.Fatalf("expected unmarshal error")
+	}
+}
