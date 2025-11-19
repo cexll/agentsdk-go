@@ -589,7 +589,9 @@ runtime, err := api.New(ctx, api.Options{
 
         // 内置工具
         toolbuiltin.NewBashTool(),
-        toolbuiltin.NewFileTool(),
+        toolbuiltin.NewReadTool(),
+        toolbuiltin.NewWriteTool(),
+        toolbuiltin.NewEditTool(),
     },
 })
 ```

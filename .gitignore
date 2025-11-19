@@ -24,3 +24,9 @@ basic
 # Example binaries
 examples/cli/cli
 examples/mcp/mcp
+examples/http/http
+
+.claude
+.claude-trace
+
+tools.json

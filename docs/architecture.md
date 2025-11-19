@@ -1243,7 +1243,10 @@ func main() {
     if err := ag.AddTool(builtin.NewBashTool()); err != nil {
         log.Fatal(err)
     }
-    if err := ag.AddTool(builtin.NewFileTool()); err != nil {
+    if err := ag.AddTool(builtin.NewReadTool()); err != nil {
+        log.Fatal(err)
+    }
+    if err := ag.AddTool(builtin.NewWriteTool()); err != nil {
         log.Fatal(err)
     }
     if err := ag.AddTool(builtin.NewGrepTool()); err != nil {
