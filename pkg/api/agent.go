@@ -478,7 +478,9 @@ func (m *conversationModel) Generate(ctx context.Context, _ *agent.Context) (*ag
 
 	if strings.TrimSpace(m.prompt) != "" {
 		m.history.Append(message.Message{Role: "user", Content: strings.TrimSpace(m.prompt)})
-		_ = m.hooks.UserPrompt(ctx, m.prompt)
+		if err := m.hooks.UserPrompt(ctx, m.prompt); err != nil {
+			return nil, err
+		}
 		m.prompt = ""
 	}
 
@@ -544,7 +546,9 @@ func (t *runtimeToolExecutor) Execute(ctx context.Context, call agent.ToolCall, 
 			return agent.ToolResult{}, fmt.Errorf("tool %s is not whitelisted", call.Name)
 		}
 	}
-	_ = t.hooks.PreToolUse(ctx, coreToolUsePayload(call))
+	if err := t.hooks.PreToolUse(ctx, coreToolUsePayload(call)); err != nil {
+		return agent.ToolResult{}, err
+	}
 
 	callSpec := tool.Call{
 		Name:   call.Name,
@@ -570,7 +574,10 @@ func (t *runtimeToolExecutor) Execute(ctx context.Context, call agent.ToolCall, 
 		toolResult.Metadata = meta
 	}
 
-	_ = t.hooks.PostToolUse(ctx, coreToolResultPayload(call, result, err))
+	if hookErr := t.hooks.PostToolUse(ctx, coreToolResultPayload(call, result, err)); hookErr != nil && err == nil {
+		// Prefer primary tool error if present; otherwise surface hook failure.
+		return toolResult, hookErr
+	}
 
 	if t.history != nil && result != nil && result.Result != nil {
 		t.history.Append(message.Message{
@@ -648,9 +655,16 @@ func buildSandboxManager(opts Options, cfg *config.ProjectConfig) (*sandbox.Mana
 func registerTools(registry *tool.Registry, opts Options, cfg *config.ProjectConfig) error {
 	tools := opts.Tools
 	if len(tools) == 0 {
+		bashTool := toolbuiltin.NewBashToolWithRoot(opts.ProjectRoot)
+		// CLI 模式下允许管道等 shell 元字符
+		if opts.EntryPoint == EntryPointCLI {
+			bashTool.AllowShellMetachars(true)
+		}
 		tools = []tool.Tool{
-			toolbuiltin.NewBashToolWithRoot(opts.ProjectRoot),
+			bashTool,
 			toolbuiltin.NewFileToolWithRoot(opts.ProjectRoot),
+			toolbuiltin.NewGrepToolWithRoot(opts.ProjectRoot),
+			toolbuiltin.NewGlobToolWithRoot(opts.ProjectRoot),
 		}
 	}
 	for _, impl := range tools {

@@ -66,8 +66,8 @@ func newProgressMiddleware(events chan<- StreamEvent) middleware.Funcs {
 		},
 
 		OnAfterModel: func(_ context.Context, st *middleware.State) error {
-			out, _ := st.ModelOutput.(*agent.ModelOutput)
-			if out == nil {
+			out, ok := st.ModelOutput.(*agent.ModelOutput)
+			if !ok || out == nil {
 				return nil
 			}
 
@@ -93,15 +93,24 @@ func newProgressMiddleware(events chan<- StreamEvent) middleware.Funcs {
 		},
 
 		OnBeforeTool: func(_ context.Context, st *middleware.State) error {
-			call, _ := st.ToolCall.(agent.ToolCall)
+			call, ok := st.ToolCall.(agent.ToolCall)
+			if !ok {
+				return nil
+			}
 			iter := st.Iteration
 			em.emit(StreamEvent{Type: EventToolExecutionStart, ToolUseID: call.ID, Name: call.Name, Iteration: &iter})
 			return nil
 		},
 
 		OnAfterTool: func(_ context.Context, st *middleware.State) error {
-			call, _ := st.ToolCall.(agent.ToolCall)
-			res, _ := st.ToolResult.(agent.ToolResult)
+			call, ok := st.ToolCall.(agent.ToolCall)
+			if !ok {
+				return nil
+			}
+			res, ok := st.ToolResult.(agent.ToolResult)
+			if !ok {
+				return nil
+			}
 
 			if res.Output != "" {
 				em.emit(StreamEvent{Type: EventToolExecutionOutput, ToolUseID: call.ID, Name: call.Name, Output: res.Output})

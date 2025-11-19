@@ -226,17 +226,53 @@ func (o Options) withDefaults() Options {
 	if o.Mode.EntryPoint == "" {
 		o.Mode.EntryPoint = o.EntryPoint
 	}
-	if o.ProjectRoot == "" {
-		o.ProjectRoot = "."
+
+	// 智能解析项目根目录
+	if o.ProjectRoot == "" || o.ProjectRoot == "." {
+		if resolved, err := ResolveProjectRoot(); err == nil {
+			o.ProjectRoot = resolved
+		} else {
+			o.ProjectRoot = "."
+		}
 	}
 	o.ProjectRoot = filepath.Clean(o.ProjectRoot)
+
 	if o.Sandbox.Root == "" {
 		o.Sandbox.Root = o.ProjectRoot
 	}
+
+	// 根据 EntryPoint 自动设置网络白名单默认值
+	if len(o.Sandbox.NetworkAllow) == 0 {
+		o.Sandbox.NetworkAllow = defaultNetworkAllowList(o.EntryPoint)
+	}
+
 	if o.MaxSessions <= 0 {
 		o.MaxSessions = defaultMaxSessions
 	}
 	return o
+}
+
+// defaultNetworkAllowList 根据 EntryPoint 返回默认网络白名单
+func defaultNetworkAllowList(ep EntryPoint) []string {
+	switch ep {
+	case EntryPointCLI:
+		// CLI 模式：允许本机所有网段访问
+		return []string{
+			"localhost",
+			"127.0.0.1",
+			"::1",       // IPv6 localhost
+			"0.0.0.0",   // 本机所有接口
+			"*.local",   // mDNS 本地域名
+			"192.168.*", // 常见私有网段
+			"10.*",      // 私有网段
+			"172.16.*",  // 私有网段
+		}
+	case EntryPointCI, EntryPointPlatform:
+		// CI/Platform 模式：严格限制，默认空白名单
+		return []string{}
+	default:
+		return []string{}
+	}
 }
 
 func (o Options) modeContext() ModeContext {
