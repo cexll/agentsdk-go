@@ -38,9 +38,11 @@ func TestExecutorRunAndMutex(t *testing.T) {
 
 func TestExecutorErrorPropagation(t *testing.T) {
 	exec := NewExecutor()
-	exec.Register(Definition{Name: "fail"}, HandlerFunc(func(ctx context.Context, inv Invocation) (Result, error) {
+	if err := exec.Register(Definition{Name: "fail"}, HandlerFunc(func(ctx context.Context, inv Invocation) (Result, error) {
 		return Result{}, errors.New("boom")
-	}))
+	})); err != nil {
+		t.Fatalf("register fail: %v", err)
+	}
 	inv := []Invocation{{Name: "fail"}}
 	results, err := exec.Execute(context.Background(), inv)
 	if err == nil || err.Error() != "boom" {
@@ -68,12 +70,16 @@ func TestExecutorListAndValidation(t *testing.T) {
 	}
 
 	exec := NewExecutor()
-	exec.Register(Definition{Name: "beta", Priority: 0}, HandlerFunc(func(context.Context, Invocation) (Result, error) {
+	if err := exec.Register(Definition{Name: "beta", Priority: 0}, HandlerFunc(func(context.Context, Invocation) (Result, error) {
 		return Result{Metadata: map[string]any{"k": "v"}}, nil
-	}))
-	exec.Register(Definition{Name: "alpha", Priority: 1}, HandlerFunc(func(context.Context, Invocation) (Result, error) {
+	})); err != nil {
+		t.Fatalf("register beta: %v", err)
+	}
+	if err := exec.Register(Definition{Name: "alpha", Priority: 1}, HandlerFunc(func(context.Context, Invocation) (Result, error) {
 		return Result{}, nil
-	}))
+	})); err != nil {
+		t.Fatalf("register alpha: %v", err)
+	}
 	list := exec.List()
 	if len(list) != 2 || list[0].Name != "alpha" {
 		t.Fatalf("unexpected list order: %+v", list)
@@ -88,9 +94,15 @@ func TestExecutorListAndValidation(t *testing.T) {
 	}
 
 	// clone coverage
-	out, _ := exec.Execute(context.Background(), []Invocation{{Name: "beta"}})
+	out, err := exec.Execute(context.Background(), []Invocation{{Name: "beta"}})
+	if err != nil {
+		t.Fatalf("execute beta: %v", err)
+	}
 	out[0].Metadata["k"] = "mutated"
-	refreshed, _ := exec.Execute(context.Background(), []Invocation{{Name: "beta"}})
+	refreshed, err := exec.Execute(context.Background(), []Invocation{{Name: "beta"}})
+	if err != nil {
+		t.Fatalf("execute beta second: %v", err)
+	}
 	if refreshed[0].Metadata["k"] != "v" {
 		t.Fatalf("metadata clone failed")
 	}

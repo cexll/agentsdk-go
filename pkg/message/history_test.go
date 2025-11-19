@@ -16,7 +16,11 @@ func TestHistoryAppendAndSnapshotIsolation(t *testing.T) {
 	if len(snapshot) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(snapshot))
 	}
-	if got := snapshot[0].ToolCalls[0].Arguments["x"].(int); got != 1 {
+	got, ok := snapshot[0].ToolCalls[0].Arguments["x"].(int)
+	if !ok {
+		t.Fatalf("expected int argument, got %T", snapshot[0].ToolCalls[0].Arguments["x"])
+	}
+	if got != 1 {
 		t.Fatalf("arguments mutated: %v", got)
 	}
 }

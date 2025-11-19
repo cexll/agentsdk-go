@@ -9,7 +9,6 @@ func (f fixedCounter) Count(msg Message) int {
 		return 1
 	}
 	cost := f.costs[0]
-	f.costs = f.costs[1:]
 	return cost
 }
 
@@ -152,14 +151,6 @@ func TestTrimmerTableScenarios(t *testing.T) {
 			}
 		})
 	}
-}
-
-func testCounter(costs []int) TokenCounter {
-	return tokenCounterFunc(func(msg Message) int {
-		cost := costs[len(costs)-1]
-		costs = costs[:len(costs)-1]
-		return cost
-	})
 }
 
 type tokenCounterFunc func(Message) int

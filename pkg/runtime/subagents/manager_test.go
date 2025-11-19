@@ -24,7 +24,11 @@ func TestManagerRegisterAndDispatchTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
-	if res.Subagent != "code" || res.Output != "child" || res.Metadata["tools"].([]string)[0] != "bash" {
+	tools, ok := res.Metadata["tools"].([]string)
+	if !ok {
+		t.Fatalf("expected tools metadata slice, got %T", res.Metadata["tools"])
+	}
+	if res.Subagent != "code" || res.Output != "child" || tools[0] != "bash" {
 		t.Fatalf("unexpected result: %+v", res)
 	}
 }
@@ -35,13 +39,19 @@ func TestManagerAutoMatchPriorityAndMutex(t *testing.T) {
 		return Result{}, errors.New("boom")
 	})
 	matcher := skills.KeywordMatcher{Any: []string{"deploy", "ops"}}
-	m.Register(Definition{Name: "low", Priority: 1, Matchers: []skills.Matcher{matcher}}, errorHandler)
-	m.Register(Definition{Name: "high", Priority: 2, MutexKey: "env", Matchers: []skills.Matcher{matcher}}, HandlerFunc(func(ctx context.Context, subCtx Context, req Request) (Result, error) {
+	if err := m.Register(Definition{Name: "low", Priority: 1, Matchers: []skills.Matcher{matcher}}, errorHandler); err != nil {
+		t.Fatalf("register low: %v", err)
+	}
+	if err := m.Register(Definition{Name: "high", Priority: 2, MutexKey: "env", Matchers: []skills.Matcher{matcher}}, HandlerFunc(func(ctx context.Context, subCtx Context, req Request) (Result, error) {
 		return Result{Output: "ok"}, nil
-	}))
-	m.Register(Definition{Name: "other", Priority: 3, MutexKey: "env", Matchers: []skills.Matcher{skills.KeywordMatcher{Any: []string{"other"}}}}, HandlerFunc(func(ctx context.Context, subCtx Context, req Request) (Result, error) {
+	})); err != nil {
+		t.Fatalf("register high: %v", err)
+	}
+	if err := m.Register(Definition{Name: "other", Priority: 3, MutexKey: "env", Matchers: []skills.Matcher{skills.KeywordMatcher{Any: []string{"other"}}}}, HandlerFunc(func(ctx context.Context, subCtx Context, req Request) (Result, error) {
 		return Result{Output: "other"}, nil
-	}))
+	})); err != nil {
+		t.Fatalf("register other: %v", err)
+	}
 
 	res, err := m.Dispatch(context.Background(), Request{Instruction: "deploy", Activation: skills.ActivationContext{Prompt: "deploy prod"}})
 	if err != nil {
@@ -104,8 +114,12 @@ func TestManagerListAndDefinitionClone(t *testing.T) {
 	}
 
 	// ensure mutex filtering path keeps first entry when same priority
-	m.Register(Definition{Name: "mutex-a", Priority: 1, MutexKey: "env"}, handler)
-	m.Register(Definition{Name: "mutex-b", Priority: 1, MutexKey: "env"}, handler)
+	if err := m.Register(Definition{Name: "mutex-a", Priority: 1, MutexKey: "env"}, handler); err != nil {
+		t.Fatalf("register mutex-a: %v", err)
+	}
+	if err := m.Register(Definition{Name: "mutex-b", Priority: 1, MutexKey: "env"}, handler); err != nil {
+		t.Fatalf("register mutex-b: %v", err)
+	}
 	match := m.matching(skills.ActivationContext{})
 	if len(match) == 0 {
 		t.Fatalf("expected at least one match")
@@ -125,12 +139,16 @@ func TestManagerValidationAndGuards(t *testing.T) {
 	if err := m.Register(Definition{Name: "ok"}, nil); err == nil {
 		t.Fatalf("expected nil handler rejection")
 	}
-	m.Register(Definition{Name: "prio-high", Priority: -1}, HandlerFunc(func(context.Context, Context, Request) (Result, error) {
+	if err := m.Register(Definition{Name: "prio-high", Priority: -1}, HandlerFunc(func(context.Context, Context, Request) (Result, error) {
 		return Result{}, nil
-	}))
-	m.Register(Definition{Name: "prio-low", Priority: 1}, HandlerFunc(func(context.Context, Context, Request) (Result, error) {
+	})); err != nil {
+		t.Fatalf("register prio-high: %v", err)
+	}
+	if err := m.Register(Definition{Name: "prio-low", Priority: 1}, HandlerFunc(func(context.Context, Context, Request) (Result, error) {
 		return Result{}, nil
-	}))
+	})); err != nil {
+		t.Fatalf("register prio-low: %v", err)
+	}
 	list := m.List()
 	if len(list) != 2 || list[0].Name != "prio-low" || list[0].Priority != 1 {
 		t.Fatalf("expected list order by priority desc, got %+v", list)

@@ -95,5 +95,7 @@ func TestSessionCacheNoExpiryWhenTTLZero(t *testing.T) {
 	if builds.Load() != 1 {
 		t.Fatalf("should not rebuild when ttl zero, builds=%d", builds.Load())
 	}
-	cache.CloseIdle() // no panic even with ttl zero
+	if err := cache.CloseIdle(); err != nil {
+		t.Fatalf("close idle: %v", err)
+	}
 }

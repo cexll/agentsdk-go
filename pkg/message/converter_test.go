@@ -7,7 +7,7 @@ func TestCloneMessageDeepCopiesToolCallArguments(t *testing.T) {
 	cloned := CloneMessage(msg)
 
 	cloned.ToolCalls[0].Arguments["a"] = 42
-	if msg.ToolCalls[0].Arguments["a"].(int) != 1 {
+	if v, ok := msg.ToolCalls[0].Arguments["a"].(int); !ok || v != 1 {
 		t.Fatalf("original mutated: %+v", msg.ToolCalls[0].Arguments)
 	}
 }

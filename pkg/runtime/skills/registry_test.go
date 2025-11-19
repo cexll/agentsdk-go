@@ -25,7 +25,11 @@ func TestRegistryRegisterAndExecute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute failed: %v", err)
 	}
-	if res.Skill != "echo" || res.Output != "hi" || res.Metadata["ctx"].(string) != "hi" {
+	meta, ok := res.Metadata["ctx"].(string)
+	if !ok {
+		t.Fatalf("expected metadata string, got %T", res.Metadata["ctx"])
+	}
+	if res.Skill != "echo" || res.Output != "hi" || meta != "hi" {
 		t.Fatalf("unexpected result: %+v", res)
 	}
 
@@ -34,9 +38,11 @@ func TestRegistryRegisterAndExecute(t *testing.T) {
 	}
 
 	// handler error path
-	r.Register(Definition{Name: "err"}, HandlerFunc(func(context.Context, ActivationContext) (Result, error) {
+	if err := r.Register(Definition{Name: "err"}, HandlerFunc(func(context.Context, ActivationContext) (Result, error) {
 		return Result{}, errors.New("boom")
-	}))
+	})); err != nil {
+		t.Fatalf("register err: %v", err)
+	}
 	if _, err := r.Execute(context.Background(), "err", ActivationContext{}); err == nil {
 		t.Fatalf("expected execution error")
 	}
@@ -73,8 +79,12 @@ func TestRegistryMatchOrderingAndMutex(t *testing.T) {
 
 func TestRegistryListSorted(t *testing.T) {
 	r := NewRegistry()
-	r.Register(Definition{Name: "b", Priority: 1}, HandlerFunc(func(ctx context.Context, ac ActivationContext) (Result, error) { return Result{}, nil }))
-	r.Register(Definition{Name: "a", Priority: 2}, HandlerFunc(func(ctx context.Context, ac ActivationContext) (Result, error) { return Result{}, nil }))
+	if err := r.Register(Definition{Name: "b", Priority: 1}, HandlerFunc(func(ctx context.Context, ac ActivationContext) (Result, error) { return Result{}, nil })); err != nil {
+		t.Fatalf("register b: %v", err)
+	}
+	if err := r.Register(Definition{Name: "a", Priority: 2}, HandlerFunc(func(ctx context.Context, ac ActivationContext) (Result, error) { return Result{}, nil })); err != nil {
+		t.Fatalf("register a: %v", err)
+	}
 	defs := r.List()
 	if len(defs) != 2 || defs[0].Name != "a" || defs[1].Name != "b" {
 		t.Fatalf("unexpected list order: %+v", defs)
@@ -130,9 +140,11 @@ func TestRegistryDefaultsAndValidation(t *testing.T) {
 	}
 
 	// list clones metadata and matchers
-	_ = r.Register(Definition{Name: "with-meta", Metadata: map[string]string{"k": "v"}, Matchers: []Matcher{KeywordMatcher{All: []string{"x"}}}}, HandlerFunc(func(context.Context, ActivationContext) (Result, error) {
+	if err := r.Register(Definition{Name: "with-meta", Metadata: map[string]string{"k": "v"}, Matchers: []Matcher{KeywordMatcher{All: []string{"x"}}}}, HandlerFunc(func(context.Context, ActivationContext) (Result, error) {
 		return Result{}, nil
-	}))
+	})); err != nil {
+		t.Fatalf("register with-meta: %v", err)
+	}
 	defs := r.List()
 	if len(defs) != 2 {
 		t.Fatalf("expected two definitions")

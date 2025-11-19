@@ -280,8 +280,15 @@ func (h *registrySSEHarness) handleRPC(w http.ResponseWriter, r *http.Request) {
 		})
 	case "tools/call":
 		var params mcp.ToolCallParams
-		raw, _ := json.Marshal(req.Params)
-		_ = json.Unmarshal(raw, &params)
+		raw, err := json.Marshal(req.Params)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := json.Unmarshal(raw, &params); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		text := ""
 		if params.Arguments != nil {
 			if v, ok := params.Arguments["text"].(string); ok {

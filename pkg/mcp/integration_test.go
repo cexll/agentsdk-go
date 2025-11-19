@@ -71,8 +71,15 @@ func runSTDIOHelper() {
 			resp.Result = mustRaw(ToolListResult{Tools: []ToolDescriptor{{Name: "echo", Description: "Echo stdio"}}})
 		case "tools/call":
 			var params ToolCallParams
-			raw, _ := json.Marshal(req.Params)
-			_ = json.Unmarshal(raw, &params)
+			raw, err := json.Marshal(req.Params)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "marshal params: %v", err)
+				return
+			}
+			if err := json.Unmarshal(raw, &params); err != nil {
+				fmt.Fprintf(os.Stderr, "unmarshal params: %v", err)
+				return
+			}
 			text := ""
 			if params.Arguments != nil {
 				if v, ok := params.Arguments["text"].(string); ok {
@@ -214,8 +221,15 @@ func (h *sseHarness) handleRPC(w http.ResponseWriter, r *http.Request) {
 		resp.Result = mustRaw(ToolListResult{Tools: []ToolDescriptor{{Name: "echo", Description: "Echo sse"}}})
 	case "tools/call":
 		var params ToolCallParams
-		raw, _ := json.Marshal(req.Params)
-		_ = json.Unmarshal(raw, &params)
+		raw, err := json.Marshal(req.Params)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := json.Unmarshal(raw, &params); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		reconnect := false
 		text := ""
 		if params.Arguments != nil {

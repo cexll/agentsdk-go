@@ -59,7 +59,7 @@ func TestLoaderWithExplicitClaudeDir(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(claude, "config.yaml"), []byte(`version: 1.0.0
 plugins:
   - name: explicit
-`), 0o644))
+`), 0o600))
 
 	loader, err := NewLoader(root, WithTrustStore(ts), WithClaudeDir(claude))
 	require.NoError(t, err)
@@ -78,7 +78,7 @@ func TestLoaderRespectsCustomValidator(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(claude, "config.yaml"), []byte(`version: 1.0.0
 plugins:
   - name: validator
-`), 0o644))
+`), 0o600))
 
 	stub := &stubValidator{}
 	loader, err := NewLoader(root, WithTrustStore(ts), WithValidator(stub))
@@ -184,7 +184,7 @@ func TestOptionalPluginSkipping(t *testing.T) {
 plugins:
   - name: optional
     optional: true
-`), 0o644))
+`), 0o600))
 
 	loader, err := NewLoader(root, WithTrustStore(ts))
 	require.NoError(t, err)
@@ -204,7 +204,7 @@ func TestLoaderMinVersionEnforcement(t *testing.T) {
 plugins:
   - name: min
     min_version: 2.0.0
-`), 0o644))
+`), 0o600))
 
 	loader, err := NewLoader(root, WithTrustStore(ts))
 	require.NoError(t, err)
@@ -222,13 +222,13 @@ func TestCompareSemverHelper(t *testing.T) {
 func TestReadConfigPayloadVariants(t *testing.T) {
 	claude := filepath.Join(t.TempDir(), ".claude")
 	require.NoError(t, os.MkdirAll(claude, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(claude, "config.yml"), []byte("version: 1"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(claude, "config.yml"), []byte("version: 1"), 0o600))
 	path, data, err := readConfigPayload(claude)
 	require.NoError(t, err)
 	require.Contains(t, path, "config.yml")
 	require.NotEmpty(t, data)
 	require.NoError(t, os.Remove(filepath.Join(claude, "config.yml")))
-	require.NoError(t, os.WriteFile(filepath.Join(claude, "config.json"), []byte(`{"version":"1"}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(claude, "config.json"), []byte(`{"version":"1"}`), 0o600))
 	path, data, err = readConfigPayload(claude)
 	require.NoError(t, err)
 	require.Contains(t, path, "config.json")
@@ -265,7 +265,7 @@ func TestWatcherAddWatchBranchesAndReloadSkip(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(claude, "config.yaml"), []byte(`version: 1.0.0
 plugins:
   - name: watch
-`), 0o644))
+	`), 0o600))
 	loader, err := NewLoader(root, WithTrustStore(ts))
 	require.NoError(t, err)
 	w, err := NewWatcher(loader)

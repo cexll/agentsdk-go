@@ -28,7 +28,7 @@ func TestRuntimeLoadsConfigFallback(t *testing.T) {
 	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
 		t.Fatalf("manifest dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(manifestDir, "manifest.yaml"), []byte("plugins: []\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(manifestDir, "manifest.yaml"), []byte("plugins: []\n"), 0o600); err != nil {
 		t.Fatalf("manifest: %v", err)
 	}
 
@@ -147,7 +147,7 @@ func newClaudeProject(t *testing.T) string {
 	if err := os.MkdirAll(claude, 0o755); err != nil {
 		t.Fatalf("claude dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(claude, "config.yaml"), []byte("version: '1.0'\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(claude, "config.yaml"), []byte("version: '1.0'\n"), 0o600); err != nil {
 		t.Fatalf("config: %v", err)
 	}
 	return root

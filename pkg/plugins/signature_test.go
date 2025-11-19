@@ -32,8 +32,9 @@ func TestTrustStoreBlocksDigest(t *testing.T) {
 	store.BlockDigest("deadbeef")
 
 	mf := &Manifest{Name: "demo", Version: "1.0.0", Entrypoint: "main", Digest: "deadbeef"}
-	payload, _ := CanonicalManifestBytes(mf)
-	err := store.Verify(mf, payload)
+	payload, err := CanonicalManifestBytes(mf)
+	require.NoError(t, err)
+	err = store.Verify(mf, payload)
 	require.Error(t, err)
 }
 

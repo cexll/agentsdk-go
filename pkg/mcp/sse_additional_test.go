@@ -209,7 +209,7 @@ func TestSSECallSuccess(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 		tr.pending.deliver(req.ID, callResult{resp: &Response{ID: req.ID}})
 	}()
-	if _, err := tr.Call(nil, req); err != nil {
+	if _, err := tr.Call(context.TODO(), req); err != nil {
 		t.Fatalf("call failed: %v", err)
 	}
 }

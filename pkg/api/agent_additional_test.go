@@ -362,7 +362,9 @@ func TestAvailableToolsNilRegistry(t *testing.T) {
 
 func TestAvailableToolsFiltersWhitelist(t *testing.T) {
 	reg := tool.NewRegistry()
-	_ = reg.Register(&echoTool{})
+	if err := reg.Register(&echoTool{}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
 	defs := availableTools(reg, map[string]struct{}{"missing": {}})
 	if len(defs) != 0 {
 		t.Fatalf("expected tools filtered out, got %v", defs)
@@ -371,7 +373,9 @@ func TestAvailableToolsFiltersWhitelist(t *testing.T) {
 
 func TestAvailableToolsReturnsDefinitions(t *testing.T) {
 	reg := tool.NewRegistry()
-	_ = reg.Register(&echoTool{})
+	if err := reg.Register(&echoTool{}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
 	defs := availableTools(reg, nil)
 	if len(defs) != 1 || defs[0].Name != "echo" {
 		t.Fatalf("unexpected tool defs: %+v", defs)
@@ -383,7 +387,9 @@ func TestAvailableToolsReturnsDefinitions(t *testing.T) {
 
 func TestAvailableToolsWhitelistAllowsMatch(t *testing.T) {
 	reg := tool.NewRegistry()
-	_ = reg.Register(&echoTool{})
+	if err := reg.Register(&echoTool{}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
 	defs := availableTools(reg, map[string]struct{}{"echo": {}})
 	if len(defs) != 1 || defs[0].Name != "echo" {
 		t.Fatalf("expected whitelisted tool, got %+v", defs)
@@ -393,7 +399,8 @@ func TestAvailableToolsWhitelistAllowsMatch(t *testing.T) {
 func TestSchemaToMap(t *testing.T) {
 	schema := &tool.JSONSchema{Type: "object", Required: []string{"x"}, Properties: map[string]any{"x": map[string]any{"type": "string"}}}
 	mapped := schemaToMap(schema)
-	if mapped["type"] != "object" || len(mapped["required"].([]string)) != 1 {
+	reqField, ok := mapped["required"].([]string)
+	if mapped["type"] != "object" || !ok || len(reqField) != 1 {
 		t.Fatalf("unexpected map: %+v", mapped)
 	}
 }
@@ -460,7 +467,11 @@ func TestConvertRunResultHelpers(t *testing.T) {
 	}
 	out := &agent.ModelOutput{Content: "ok", ToolCalls: []agent.ToolCall{{Name: "t", Input: map[string]any{"x": 1}}}}
 	res := convertRunResult(runResult{output: out})
-	if res == nil || len(res.ToolCalls) != 1 || res.ToolCalls[0].Arguments["x"].(int) != 1 {
+	if res == nil || len(res.ToolCalls) != 1 {
+		t.Fatalf("unexpected converted result: %+v", res)
+	}
+	v, ok := res.ToolCalls[0].Arguments["x"].(int)
+	if !ok || v != 1 {
 		t.Fatalf("unexpected converted result: %+v", res)
 	}
 }
@@ -475,11 +486,12 @@ func TestConvertMessagesClonesToolCalls(t *testing.T) {
 		t.Fatalf("unexpected conversion: %+v", converted)
 	}
 	msgs[1].ToolCalls[0].Arguments["count"] = 41
-	if converted[1].ToolCalls[0].Arguments["count"].(int) != 1 {
+	count, ok := converted[1].ToolCalls[0].Arguments["count"].(int)
+	if !ok || count != 1 {
 		t.Fatal("expected arguments to be cloned")
 	}
 	converted[1].ToolCalls[0].Arguments["count"] = 7
-	if msgs[1].ToolCalls[0].Arguments["count"].(int) != 41 {
+	if orig, ok := msgs[1].ToolCalls[0].Arguments["count"].(int); !ok || orig != 41 {
 		t.Fatal("expected clone not to mutate source")
 	}
 	if convertMessages(nil) != nil {
@@ -490,11 +502,12 @@ func TestConvertMessagesClonesToolCalls(t *testing.T) {
 func TestCloneArgumentsCopiesMap(t *testing.T) {
 	args := map[string]any{"a": 1}
 	dup := cloneArguments(args)
-	if dup["a"].(int) != 1 {
+	v, ok := dup["a"].(int)
+	if !ok || v != 1 {
 		t.Fatalf("unexpected clone: %+v", dup)
 	}
 	dup["a"] = 2
-	if args["a"].(int) != 1 {
+	if orig, ok := args["a"].(int); !ok || orig != 1 {
 		t.Fatal("mutation leaked to original map")
 	}
 	if cloneArguments(nil) != nil {

@@ -15,7 +15,7 @@ func TestFileSystemAllowListValidate(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(inside), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(inside, []byte("ok"), 0o644); err != nil {
+	if err := os.WriteFile(inside, []byte("ok"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -45,7 +45,7 @@ func TestFileSystemAllowListValidate(t *testing.T) {
 func TestFileSystemAllowListSymlink(t *testing.T) {
 	root := canonicalTempDir(t)
 	outside := filepath.Join(canonicalTempDir(t), "secret.txt")
-	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
 		t.Fatalf("write outside: %v", err)
 	}
 
@@ -71,7 +71,7 @@ func TestFileSystemAllowListAdditionalRoots(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(path, []byte("ok"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("ok"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestManagerEnforce(t *testing.T) {
 	manager := NewManager(fsPolicy, netPolicy, limiter)
 
 	path := filepath.Join(root, "allowed.txt")
-	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(""), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 

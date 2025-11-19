@@ -31,7 +31,7 @@ func TestContextStorageOnStdlibContext(t *testing.T) {
 		t.Fatalf("unexpected recovered context: %+v", recovered)
 	}
 
-	if _, ok := FromContext(nil); ok {
+	if _, ok := FromContext(context.TODO()); ok {
 		t.Fatalf("expected no context from nil")
 	}
 

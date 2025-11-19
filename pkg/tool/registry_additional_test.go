@@ -218,7 +218,7 @@ func TestInitializeMCPClientSuccess(t *testing.T) {
 		return &mcp.Response{JSONRPC: "2.0", ID: req.ID, Result: marshalMust(map[string]any{"ok": true})}, nil
 	})
 	client := mcp.NewClient(tr)
-	if err := initializeMCPClient(nil, client); err != nil {
+	if err := initializeMCPClient(context.TODO(), client); err != nil {
 		t.Fatalf("initialize should succeed: %v", err)
 	}
 	if tr.callCount("initialize") != 1 {

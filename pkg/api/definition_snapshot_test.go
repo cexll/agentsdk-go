@@ -15,9 +15,11 @@ func TestDefinitionSnapshotVariants(t *testing.T) {
 	}
 
 	exec := commands.NewExecutor()
-	_ = exec.Register(commands.Definition{Name: "tag"}, commands.HandlerFunc(func(context.Context, commands.Invocation) (commands.Result, error) {
+	if err := exec.Register(commands.Definition{Name: "tag"}, commands.HandlerFunc(func(context.Context, commands.Invocation) (commands.Result, error) {
 		return commands.Result{}, nil
-	}))
+	})); err != nil {
+		t.Fatalf("register: %v", err)
+	}
 	def = definitionSnapshot(exec, "TAG")
 	if def.Name != "tag" {
 		t.Fatalf("expected registered definition, got %+v", def)

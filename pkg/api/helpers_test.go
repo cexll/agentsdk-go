@@ -48,9 +48,11 @@ func TestApplyPromptMetadataOverride(t *testing.T) {
 
 func TestOrderedForcedSkills(t *testing.T) {
 	reg := skills.NewRegistry()
-	_ = reg.Register(skills.Definition{Name: "alpha"}, skills.HandlerFunc(func(context.Context, skills.ActivationContext) (skills.Result, error) {
+	if err := reg.Register(skills.Definition{Name: "alpha"}, skills.HandlerFunc(func(context.Context, skills.ActivationContext) (skills.Result, error) {
 		return skills.Result{}, nil
-	}))
+	})); err != nil {
+		t.Fatalf("register skill: %v", err)
+	}
 	activations := orderedForcedSkills(reg, []string{"alpha", "missing"})
 	if len(activations) != 1 {
 		t.Fatalf("expected one activation")
@@ -131,8 +133,8 @@ func TestRegisterToolsUsesDefaultImplementations(t *testing.T) {
 		t.Fatalf("register tools: %v", err)
 	}
 	tools := registry.List()
-	if len(tools) != 2 {
-		t.Fatalf("expected two default tools, got %d", len(tools))
+	if len(tools) != 4 {
+		t.Fatalf("expected four default tools (Bash, File, Grep, Glob), got %d", len(tools))
 	}
 	for _, impl := range tools {
 		if strings.TrimSpace(impl.Name()) == "" {
@@ -176,7 +178,8 @@ func TestLoadProjectConfigHandlesMissingClaudeDir(t *testing.T) {
 		t.Fatalf("load config: %v", err)
 	}
 	if cfg == nil {
-		t.Fatal("expected fallback config")
+		t.Fatalf("expected fallback config")
+		return
 	}
 	if cfg.ClaudeDir != "" {
 		t.Fatalf("expected empty claude dir, got %q", cfg.ClaudeDir)
@@ -202,8 +205,12 @@ func TestLoadProjectConfigHandlesPluginManifestError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg == nil || cfg.ClaudeDir != "" {
-		t.Fatalf("expected fallback state, got %+v", cfg)
+	if cfg == nil {
+		t.Fatalf("expected fallback state, got nil")
+		return
+	}
+	if cfg.ClaudeDir != "" {
+		t.Fatalf("expected empty claude dir, got %+v", cfg)
 	}
 }
 
@@ -216,7 +223,7 @@ func TestLoadProjectConfigHandlesInvalidPluginName(t *testing.T) {
 		t.Fatalf("plugin dir: %v", err)
 	}
 	manifest := "name: BADNAME\n"
-	if err := os.WriteFile(filepath.Join(pluginDir, "manifest.yaml"), []byte(manifest), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(pluginDir, "manifest.yaml"), []byte(manifest), 0o600); err != nil {
 		t.Fatalf("manifest: %v", err)
 	}
 	loader, err := config.NewLoader(root)
@@ -339,14 +346,15 @@ func TestMergeTagsUtility(t *testing.T) {
 
 func TestMergeMetadataInitializesDestination(t *testing.T) {
 	dst := mergeMetadata(nil, map[string]any{"k": "v"})
-	if dst["k"].(string) != "v" {
+	if v, ok := dst["k"].(string); !ok || v != "v" {
 		t.Fatalf("expected metadata to be initialised, got %+v", dst)
 	}
 	dst = mergeMetadata(dst, map[string]any{"k": "override"})
-	if dst["k"].(string) != "override" {
+	if v, ok := dst["k"].(string); !ok || v != "override" {
 		t.Fatalf("expected override applied, got %+v", dst)
 	}
-	if same := mergeMetadata(dst, nil); same["k"].(string) != "override" {
+	same := mergeMetadata(dst, nil)
+	if sameVal, ok := same["k"].(string); !ok || sameVal != "override" {
 		t.Fatalf("expected nil source to be ignored, got %+v", same)
 	}
 }
@@ -424,7 +432,7 @@ func writeClaudeConfig(t *testing.T, projectRoot, payload string) string {
 		t.Fatalf("claude dir: %v", err)
 	}
 	configPath := filepath.Join(claudeDir, "config.yaml")
-	if err := os.WriteFile(configPath, []byte(payload), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte(payload), 0o600); err != nil {
 		t.Fatalf("config file: %v", err)
 	}
 	return claudeDir

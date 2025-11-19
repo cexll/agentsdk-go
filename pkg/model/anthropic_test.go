@@ -35,7 +35,7 @@ func TestCompleteBuildsRequestAndParsesToolUse(t *testing.T) {
 
 	m := &anthropicModel{
 		msgs:       mock,
-		model:      anthropicsdk.ModelClaude3_7SonnetLatest,
+		model:      anthropicsdk.ModelClaude3_7SonnetLatest, //nolint:staticcheck // exercise deprecated constant for compatibility
 		maxTokens:  256,
 		maxRetries: 0,
 		system:     "base-system",
@@ -106,7 +106,7 @@ func TestRetryOnTransientError(t *testing.T) {
 	}
 	m := &anthropicModel{
 		msgs:       mock,
-		model:      anthropicsdk.ModelClaude3_7SonnetLatest,
+		model:      anthropicsdk.ModelClaude3_7SonnetLatest, //nolint:staticcheck // exercise deprecated constant for compatibility
 		maxTokens:  32,
 		maxRetries: 1,
 	}
@@ -189,7 +189,7 @@ func TestStreamDeltasAndToolUse(t *testing.T) {
 
 	m := &anthropicModel{
 		msgs:       mock,
-		model:      anthropicsdk.ModelClaude3_7SonnetLatest,
+		model:      anthropicsdk.ModelClaude3_7SonnetLatest, //nolint:staticcheck // exercise deprecated constant for compatibility
 		maxTokens:  32,
 		maxRetries: 0,
 	}
@@ -340,7 +340,7 @@ func TestAdditionalBranches(t *testing.T) {
 	}
 
 	cp := m.countParams(anthropicsdk.MessageNewParams{
-		Model: anthropicsdk.ModelClaude3_7SonnetLatest,
+		Model: anthropicsdk.ModelClaude3_7SonnetLatest, //nolint:staticcheck // exercise deprecated constant for compatibility
 		System: []anthropicsdk.TextBlockParam{
 			{Text: "sys"},
 		},
@@ -350,7 +350,16 @@ func TestAdditionalBranches(t *testing.T) {
 		t.Fatalf("count params conversion failed: %+v", cp)
 	}
 
-	if out := cloneValue(map[string]any{"ary": []any{map[string]any{"k": "v"}}}).(map[string]any); out["ary"].([]any)[0].(map[string]any)["k"] != "v" {
+	out, ok := cloneValue(map[string]any{"ary": []any{map[string]any{"k": "v"}}}).(map[string]any)
+	if !ok {
+		t.Fatalf("expected map clone, got %T", cloneValue(map[string]any{"ary": []any{map[string]any{"k": "v"}}}))
+	}
+	ary, ok := out["ary"].([]any)
+	if !ok || len(ary) != 1 {
+		t.Fatalf("expected ary slice, got %#v", out["ary"])
+	}
+	elem, ok := ary[0].(map[string]any)
+	if !ok || elem["k"] != "v" {
 		t.Fatalf("cloneValue lost data: %+v", out)
 	}
 }
@@ -390,7 +399,11 @@ func TestAdditionalBranchesII(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new anthropic failed: %v", err)
 	}
-	if am := cfgModel.(*anthropicModel); am.maxTokens != 4096 || am.maxRetries != 0 {
+	am, ok := cfgModel.(*anthropicModel)
+	if !ok {
+		t.Fatalf("expected *anthropicModel, got %T", cfgModel)
+	}
+	if am.maxTokens != 4096 || am.maxRetries != 0 {
 		t.Fatalf("defaults not applied: %+v", am)
 	}
 
@@ -408,7 +421,8 @@ func TestStreamUnavailable(t *testing.T) {
 			return nil, errors.New("boom")
 		},
 	}
-	err := (&anthropicModel{msgs: mock, model: anthropicsdk.ModelClaude3_7SonnetLatest, maxTokens: 1}).CompleteStream(
+	modelName := anthropicsdk.ModelClaude3_7SonnetLatest //nolint:staticcheck // exercise deprecated constant for compatibility
+	err := (&anthropicModel{msgs: mock, model: modelName, maxTokens: 1}).CompleteStream(
 		context.Background(),
 		Request{Messages: []Message{{Role: "user", Content: "hi"}}},
 		func(StreamResult) error { return nil },
@@ -524,7 +538,9 @@ func mkEvent(v any) ssestream.Event {
 	var typeProbe struct {
 		Type string `json:"type"`
 	}
-	_ = json.Unmarshal(data, &typeProbe)
+	if err := json.Unmarshal(data, &typeProbe); err != nil {
+		panic(err)
+	}
 	return ssestream.Event{Type: typeProbe.Type, Data: data}
 }
 

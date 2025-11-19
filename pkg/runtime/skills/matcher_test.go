@@ -17,7 +17,11 @@ func TestActivationContextCloneIsolation(t *testing.T) {
 	cloned.Metadata["x"] = 2
 	cloned.Traits[0] = "ops"
 
-	if ctx.Prompt != "Hello world" || ctx.Channels[0] != "cli" || ctx.Tags["k"] != "v" || ctx.Metadata["x"].(int) != 1 || ctx.Traits[0] != "dev" {
+	meta, ok := ctx.Metadata["x"].(int)
+	if !ok {
+		t.Fatalf("expected int metadata, got %T", ctx.Metadata["x"])
+	}
+	if ctx.Prompt != "Hello world" || ctx.Channels[0] != "cli" || ctx.Tags["k"] != "v" || meta != 1 || ctx.Traits[0] != "dev" {
 		t.Fatalf("clone mutated original context: %#v", ctx)
 	}
 }

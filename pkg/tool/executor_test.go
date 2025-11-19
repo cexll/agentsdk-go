@@ -70,7 +70,9 @@ func TestExecutorEnforcesSandbox(t *testing.T) {
 func TestExecutorClonesParamsAndPreservesOrder(t *testing.T) {
 	reg := NewRegistry()
 	tool := &stubTool{name: "echo", delay: 15 * time.Millisecond, mutate: true}
-	_ = reg.Register(tool)
+	if err := reg.Register(tool); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
 	exec := NewExecutor(reg, nil)
 
 	shared := map[string]any{"x": 1, "nested": map[string]any{"y": 2}}
@@ -87,7 +89,11 @@ func TestExecutorClonesParamsAndPreservesOrder(t *testing.T) {
 	if _, ok := shared["patched"]; ok {
 		t.Fatalf("shared map mutated: %+v", shared)
 	}
-	if nested := shared["nested"].(map[string]any); nested["y"] != 2 {
+	nested, ok := shared["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested map, got %T", shared["nested"])
+	}
+	if nested["y"] != 2 {
 		t.Fatalf("nested map mutated: %+v", nested)
 	}
 }
@@ -127,9 +133,21 @@ func TestWithSandboxReturnsCopy(t *testing.T) {
 
 func TestCloneValueDeepCopiesSlice(t *testing.T) {
 	original := []any{map[string]any{"a": 1}}
-	cloned := cloneValue(original).([]any)
-	cloned[0].(map[string]any)["a"] = 5
-	if original[0].(map[string]any)["a"].(int) != 1 {
+	clonedAny := cloneValue(original)
+	cloned, ok := clonedAny.([]any)
+	if !ok {
+		t.Fatalf("expected cloned slice, got %T", clonedAny)
+	}
+	elem, ok := cloned[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected map element, got %T", cloned[0])
+	}
+	elem["a"] = 5
+	origElem, ok := original[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected map element in original, got %T", original[0])
+	}
+	if v, ok := origElem["a"].(int); !ok || v != 1 {
 		t.Fatalf("original mutated: %#v", original)
 	}
 }

@@ -16,7 +16,7 @@ import (
 func TestLoadManifestWithSignature(t *testing.T) {
 	dir := t.TempDir()
 	entry := filepath.Join(dir, "main.sh")
-	require.NoError(t, os.WriteFile(entry, []byte("echo ok"), 0o755))
+	require.NoError(t, os.WriteFile(entry, []byte("echo ok"), 0o755)) //nolint:gosec // executable test script
 	digest := sha256.Sum256([]byte("echo ok"))
 
 	pub, priv, err := ed25519.GenerateKey(nil)
@@ -35,7 +35,7 @@ func TestLoadManifestWithSignature(t *testing.T) {
 
 	manifestBytes, err := yaml.Marshal(mf)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "manifest.yaml"), manifestBytes, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "manifest.yaml"), manifestBytes, 0o600))
 
 	store := NewTrustStore()
 	store.Register("dev", pub)
@@ -49,7 +49,7 @@ func TestLoadManifestWithSignature(t *testing.T) {
 func TestLoadManifestUnsignedTrustedWithoutStore(t *testing.T) {
 	dir := t.TempDir()
 	entry := filepath.Join(dir, "main.sh")
-	require.NoError(t, os.WriteFile(entry, []byte("echo ok"), 0o755))
+	require.NoError(t, os.WriteFile(entry, []byte("echo ok"), 0o755)) //nolint:gosec // executable test script
 	digest := sha256.Sum256([]byte("echo ok"))
 
 	mf := Manifest{
@@ -60,7 +60,7 @@ func TestLoadManifestUnsignedTrustedWithoutStore(t *testing.T) {
 	}
 	data, err := yaml.Marshal(mf)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "manifest.yaml"), data, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "manifest.yaml"), data, 0o600))
 
 	loaded, err := LoadManifest(filepath.Join(dir, "manifest.yaml"))
 	require.NoError(t, err)
@@ -71,7 +71,7 @@ func TestLoadManifestRejectsDigestMismatch(t *testing.T) {
 	dir := t.TempDir()
 	entry := filepath.Join(dir, "main.sh")
 	original := []byte("echo ok")
-	require.NoError(t, os.WriteFile(entry, original, 0o755))
+	require.NoError(t, os.WriteFile(entry, original, 0o755)) //nolint:gosec // executable test script
 	digest := sha256.Sum256(original)
 
 	mf := Manifest{
@@ -80,18 +80,19 @@ func TestLoadManifestRejectsDigestMismatch(t *testing.T) {
 		Entrypoint: "main.sh",
 		Digest:     hex.EncodeToString(digest[:]),
 	}
-	data, _ := yaml.Marshal(mf)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "manifest.yaml"), data, 0o644))
+	data, err := yaml.Marshal(mf)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "manifest.yaml"), data, 0o600))
 
-	require.NoError(t, os.WriteFile(entry, []byte("echo tampered"), 0o755))
+	require.NoError(t, os.WriteFile(entry, []byte("echo tampered"), 0o755)) //nolint:gosec // executable test script
 
-	_, err := LoadManifest(filepath.Join(dir, "manifest.yaml"))
+	_, err = LoadManifest(filepath.Join(dir, "manifest.yaml"))
 	require.Error(t, err)
 }
 
 func TestFindManifestPrefersYaml(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "manifest.yml"), []byte("{}"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "manifest.yml"), []byte("{}"), 0o600))
 	path, err := FindManifest(dir)
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(dir, "manifest.yml"), path)
@@ -111,23 +112,23 @@ func TestDiscoverManifestsLoadsAllAndSkipsMissing(t *testing.T) {
 	p1 := filepath.Join(root, "p1")
 	require.NoError(t, os.MkdirAll(p1, 0o755))
 	entry1 := filepath.Join(p1, "main.sh")
-	require.NoError(t, os.WriteFile(entry1, []byte("echo one"), 0o755))
+	require.NoError(t, os.WriteFile(entry1, []byte("echo one"), 0o755)) //nolint:gosec // executable test script
 	d1 := sha256.Sum256([]byte("echo one"))
 	m1 := Manifest{Name: "p1", Version: "1.0.0", Entrypoint: "main.sh", Digest: hex.EncodeToString(d1[:])}
 	data1, err := yaml.Marshal(m1)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(p1, "manifest.yaml"), data1, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(p1, "manifest.yaml"), data1, 0o600))
 
 	// plugin with manifest
 	p2 := filepath.Join(root, "p2")
 	require.NoError(t, os.MkdirAll(p2, 0o755))
 	entry2 := filepath.Join(p2, "main.sh")
-	require.NoError(t, os.WriteFile(entry2, []byte("echo two"), 0o755))
+	require.NoError(t, os.WriteFile(entry2, []byte("echo two"), 0o755)) //nolint:gosec // executable test script
 	d2 := sha256.Sum256([]byte("echo two"))
 	m2 := Manifest{Name: "p2", Version: "1.0.0", Entrypoint: "main.sh", Digest: hex.EncodeToString(d2[:])}
 	data2, err := yaml.Marshal(m2)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(p2, "manifest.yaml"), data2, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(p2, "manifest.yaml"), data2, 0o600))
 
 	// directory without manifest should be skipped
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "empty"), 0o755))
@@ -184,7 +185,7 @@ func TestSecureJoinPreventsTraversalAndAbs(t *testing.T) {
 
 func TestComputeDigestMatchesSHA256(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "f.txt")
-	require.NoError(t, os.WriteFile(file, []byte("hello"), 0o644))
+	require.NoError(t, os.WriteFile(file, []byte("hello"), 0o600))
 	d, err := computeDigest(file)
 	require.NoError(t, err)
 	expected := sha256.Sum256([]byte("hello"))
@@ -231,7 +232,7 @@ func TestDiscoverManifestsRespectsTrustStore(t *testing.T) {
 	plug := filepath.Join(root, "trusted")
 	require.NoError(t, os.MkdirAll(plug, 0o755))
 	entry := filepath.Join(plug, "main.sh")
-	require.NoError(t, os.WriteFile(entry, []byte("echo ok"), 0o755))
+	require.NoError(t, os.WriteFile(entry, []byte("echo ok"), 0o755)) //nolint:gosec // executable test script
 	hash := sha256.Sum256([]byte("echo ok"))
 	pub, priv, err := ed25519.GenerateKey(nil)
 	require.NoError(t, err)

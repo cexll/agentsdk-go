@@ -13,7 +13,7 @@ import (
 )
 
 func TestClientCallDecodesResult(t *testing.T) {
-	raw, _ := json.Marshal(map[string]string{"status": "ok"})
+	raw := mustMarshal(t, map[string]string{"status": "ok"})
 	st := &stubTransport{responses: []*Response{{ID: "1", Result: raw}}}
 	client := NewClient(st)
 
@@ -35,7 +35,7 @@ func TestClientCallPropagatesError(t *testing.T) {
 }
 
 func TestClientListTools(t *testing.T) {
-	payload, _ := json.Marshal(ToolListResult{Tools: []ToolDescriptor{{Name: "echo", Description: "Echo"}}})
+	payload := mustMarshal(t, ToolListResult{Tools: []ToolDescriptor{{Name: "echo", Description: "Echo"}}})
 	st := &stubTransport{responses: []*Response{{ID: "1", Result: payload}}}
 	client := NewClient(st)
 	tools, err := client.ListTools(context.Background())
@@ -48,7 +48,7 @@ func TestClientListTools(t *testing.T) {
 }
 
 func TestClientInvokeTool(t *testing.T) {
-	payload, _ := json.Marshal(ToolCallResult{Content: json.RawMessage(`"done"`)})
+	payload := mustMarshal(t, ToolCallResult{Content: json.RawMessage(`"done"`)})
 	st := &stubTransport{responses: []*Response{{ID: "1", Result: payload}}}
 	client := NewClient(st)
 	res, err := client.InvokeTool(context.Background(), "echo", map[string]interface{}{"text": "hi"})
@@ -72,7 +72,7 @@ func TestClientClose(t *testing.T) {
 }
 
 func TestClientListToolsCache(t *testing.T) {
-	raw, _ := json.Marshal(ToolListResult{Tools: []ToolDescriptor{{Name: "cache"}}})
+	raw := mustMarshal(t, ToolListResult{Tools: []ToolDescriptor{{Name: "cache"}}})
 	st := &stubTransport{responses: []*Response{{ID: "1", Result: raw}, {ID: "2", Result: raw}}}
 	now := time.Now()
 	client := NewClient(st, WithToolCacheTTL(time.Minute), withClientClock(func() time.Time { return now }))
@@ -101,7 +101,7 @@ func TestClientListToolsCache(t *testing.T) {
 }
 
 func TestClientSandboxGuard(t *testing.T) {
-	raw, _ := json.Marshal(ToolListResult{Tools: []ToolDescriptor{{Name: "safe"}}})
+	raw := mustMarshal(t, ToolListResult{Tools: []ToolDescriptor{{Name: "safe"}}})
 	st := &stubTransport{responses: []*Response{{ID: "1", Result: raw}}}
 	manager := sandbox.NewManager(nil, sandbox.NewDomainAllowList("allowed.dev"), nil)
 	client := NewClient(st, WithSandboxHostGuard(manager, "allowed.dev"))
@@ -134,7 +134,7 @@ func TestClientWithRetryPolicyOption(t *testing.T) {
 }
 
 func TestClientPreflightChain(t *testing.T) {
-	raw, _ := json.Marshal(ToolListResult{Tools: []ToolDescriptor{{Name: "chain"}}})
+	raw := mustMarshal(t, ToolListResult{Tools: []ToolDescriptor{{Name: "chain"}}})
 	st := &stubTransport{responses: []*Response{{ID: "1", Result: raw}}}
 
 	var order []string
@@ -205,7 +205,7 @@ func TestClientInvokeToolError(t *testing.T) {
 }
 
 func TestClientListToolsNoCache(t *testing.T) {
-	payload, _ := json.Marshal(ToolListResult{Tools: []ToolDescriptor{{Name: "fresh"}}})
+	payload := mustMarshal(t, ToolListResult{Tools: []ToolDescriptor{{Name: "fresh"}}})
 	st := &stubTransport{responses: []*Response{{ID: "1", Result: payload}, {ID: "2", Result: payload}}}
 	client := NewClient(st, WithToolCacheTTL(0))
 	if _, err := client.ListTools(context.Background()); err != nil {
@@ -217,6 +217,15 @@ func TestClientListToolsNoCache(t *testing.T) {
 	if len(st.calls) != 2 {
 		t.Fatalf("expected no caching when ttl=0, calls=%d", len(st.calls))
 	}
+}
+
+func mustMarshal(t *testing.T, v any) []byte {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return data
 }
 
 type stubTransport struct {

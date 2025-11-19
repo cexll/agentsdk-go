@@ -129,7 +129,7 @@ func TestNewSTDIOTransportNilContext(t *testing.T) {
 		Env:  append(os.Environ(), "MCP_STDIO_HELPER=1"),
 		Dir:  filepath.Dir(os.Args[0]),
 	}
-	transport, err := NewSTDIOTransport(nil, os.Args[0], opts)
+	transport, err := NewSTDIOTransport(context.TODO(), os.Args[0], opts)
 	if err != nil {
 		t.Fatalf("new transport: %v", err)
 	}
