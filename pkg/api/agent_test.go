@@ -63,6 +63,23 @@ func TestRuntimeRunSimple(t *testing.T) {
 		t.Fatal("sandbox manager missing")
 	}
 }
+func TestRuntimePropagatesModelError(t *testing.T) {
+	root := newClaudeProject(t)
+	mdl := &stubModel{err: errors.New("model refused")}
+	rt, err := New(context.Background(), Options{ProjectRoot: root, Model: mdl})
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+
+	resp, runErr := rt.Run(context.Background(), Request{Prompt: "please help"})
+	if !errors.Is(runErr, mdl.err) {
+		t.Fatalf("expected model error, got %v", runErr)
+	}
+	if resp != nil {
+		t.Fatalf("expected no response on model error, got %+v", resp)
+	}
+}
 
 func TestRuntimeToolFlow(t *testing.T) {
 	root := newClaudeProject(t)

@@ -14,6 +14,7 @@ import (
 	"github.com/cexll/agentsdk-go/pkg/runtime/subagents"
 	"github.com/cexll/agentsdk-go/pkg/sandbox"
 	"github.com/cexll/agentsdk-go/pkg/tool"
+	toolbuiltin "github.com/cexll/agentsdk-go/pkg/tool/builtin"
 )
 
 func TestRunStreamProducesEvents(t *testing.T) {
@@ -567,4 +568,209 @@ func (r *recordingPolicy) Limits() sandbox.ResourceLimits {
 func (r *recordingPolicy) Validate(usage sandbox.ResourceUsage) error {
 	r.lastUse = usage
 	return nil
+}
+
+func TestTaskRunnerDispatchesBuiltinTypes(t *testing.T) {
+	root := newClaudeProject(t)
+	mdl := &stubModel{}
+	type record struct {
+		ctx  subagents.Context
+		meta subagents.Context
+		req  subagents.Request
+	}
+	records := map[string]record{}
+	regs := make([]SubagentRegistration, 0, 3)
+	targets := []string{subagents.TypeGeneralPurpose, subagents.TypeExplore, subagents.TypePlan}
+	for _, name := range targets {
+		def, ok := subagents.BuiltinDefinition(name)
+		if !ok {
+			t.Fatalf("missing builtin definition %s", name)
+		}
+		if name == subagents.TypePlan {
+			def.BaseContext.Model = ""
+		}
+		subType := name
+		regs = append(regs, SubagentRegistration{
+			Definition: def,
+			Handler: subagents.HandlerFunc(func(ctx context.Context, subCtx subagents.Context, req subagents.Request) (subagents.Result, error) {
+				if subType == subagents.TypeExplore && subCtx.Allows("bash") {
+					t.Fatalf("explore subagent should not allow bash")
+				}
+				metaCtx, _ := subagents.FromContext(ctx)
+				records[subType] = record{ctx: subCtx, meta: metaCtx, req: req}
+				return subagents.Result{Output: subType + "-done"}, nil
+			}),
+		})
+	}
+
+	rt, err := New(context.Background(), Options{ProjectRoot: root, Model: mdl, Subagents: regs})
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+
+	runner := rt.taskRunner()
+	cases := []struct {
+		payload toolbuiltin.TaskRequest
+		expect  string
+	}{
+		{payload: toolbuiltin.TaskRequest{Description: "General dispatch check", Prompt: "general run", SubagentType: subagents.TypeGeneralPurpose}, expect: subagents.TypeGeneralPurpose + "-done"},
+		{payload: toolbuiltin.TaskRequest{Description: "Explore isolation proof", Prompt: "explore run", SubagentType: subagents.TypeExplore}, expect: subagents.TypeExplore + "-done"},
+		{payload: toolbuiltin.TaskRequest{Description: "Plan resume validation", Prompt: "plan run", SubagentType: subagents.TypePlan, Model: "claude-opus-4-20250514", Resume: "plan-session-42"}, expect: subagents.TypePlan + "-done"},
+	}
+
+	for _, tc := range cases {
+		res, err := runner(context.Background(), tc.payload)
+		if err != nil {
+			t.Fatalf("runner(%s): %v", tc.payload.SubagentType, err)
+		}
+		if res == nil || res.Output != tc.expect {
+			t.Fatalf("unexpected result for %s: %+v", tc.payload.SubagentType, res)
+		}
+		data, ok := res.Data.(map[string]any)
+		if !ok || data == nil || data["subagent"] != tc.payload.SubagentType {
+			t.Fatalf("missing subagent metadata for %s: %+v", tc.payload.SubagentType, res.Data)
+		}
+	}
+
+	if len(records) != len(cases) {
+		t.Fatalf("expected %d subagent invocations, got %d", len(cases), len(records))
+	}
+
+	gp := records[subagents.TypeGeneralPurpose]
+	if gp.ctx.Model != subagents.ModelSonnet {
+		t.Fatalf("expected sonnet model for general-purpose, got %s", gp.ctx.Model)
+	}
+	if gp.req.Instruction != "general run" {
+		t.Fatalf("expected prompt forwarded, got %q", gp.req.Instruction)
+	}
+	if entry, ok := gp.req.Metadata["entrypoint"].(EntryPoint); !ok || entry != EntryPointCLI {
+		t.Fatalf("expected entrypoint metadata propagated, got %+v", gp.req.Metadata["entrypoint"])
+	}
+
+	explore := records[subagents.TypeExplore]
+	tools := explore.meta.ToolList()
+	if len(tools) != 3 {
+		t.Fatalf("expected explore whitelist of 3 tools, got %v", tools)
+	}
+	if explore.meta.Allows("bash") {
+		t.Fatal("explore context should block bash")
+	}
+	if desc, ok := explore.req.Metadata["task.description"].(string); !ok || desc != "Explore isolation proof" {
+		t.Fatalf("expected description propagated, got %q", explore.req.Metadata["task.description"])
+	}
+
+	plan := records[subagents.TypePlan]
+	if plan.meta.SessionID != "plan-session-42" {
+		t.Fatalf("expected resume session propagated, got %q", plan.meta.SessionID)
+	}
+	if metaSession, ok := plan.req.Metadata["session_id"].(string); !ok || metaSession != "plan-session-42" {
+		t.Fatalf("expected session metadata forwarded, got %q", plan.req.Metadata["session_id"])
+	}
+	if plan.meta.Model != subagents.ModelSonnet {
+		t.Fatalf("expected plan model to stay at default, got %s", plan.meta.Model)
+	}
+	if val, ok := plan.meta.Metadata["task.model"].(string); !ok || val != "claude-opus-4-20250514" {
+		t.Fatalf("expected task.model metadata, got %q", plan.meta.Metadata["task.model"])
+	}
+}
+
+func TestTaskRunnerUnknownSubagentError(t *testing.T) {
+	root := newClaudeProject(t)
+	mdl := &stubModel{}
+	def, ok := subagents.BuiltinDefinition(subagents.TypeGeneralPurpose)
+	if !ok {
+		t.Fatal("missing general-purpose definition")
+	}
+	rt, err := New(context.Background(), Options{ProjectRoot: root, Model: mdl, Subagents: []SubagentRegistration{{
+		Definition: def,
+		Handler: subagents.HandlerFunc(func(context.Context, subagents.Context, subagents.Request) (subagents.Result, error) {
+			return subagents.Result{Output: "ok"}, nil
+		}),
+	}}})
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+
+	runner := rt.taskRunner()
+	_, err = runner(context.Background(), toolbuiltin.TaskRequest{
+		Description:  "Plan routing failure",
+		Prompt:       "plan now",
+		SubagentType: subagents.TypePlan,
+	})
+	if !errors.Is(err, subagents.ErrUnknownSubagent) {
+		t.Fatalf("expected ErrUnknownSubagent, got %v", err)
+	}
+}
+
+func TestTaskRunnerContextCancellation(t *testing.T) {
+	root := newClaudeProject(t)
+	mdl := &stubModel{}
+	def, ok := subagents.BuiltinDefinition(subagents.TypeGeneralPurpose)
+	if !ok {
+		t.Fatal("missing general-purpose definition")
+	}
+	rt, err := New(context.Background(), Options{ProjectRoot: root, Model: mdl, Subagents: []SubagentRegistration{{
+		Definition: def,
+		Handler: subagents.HandlerFunc(func(ctx context.Context, subCtx subagents.Context, req subagents.Request) (subagents.Result, error) {
+			<-ctx.Done()
+			return subagents.Result{}, ctx.Err()
+		}),
+	}}})
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	runner := rt.taskRunner()
+	_, err = runner(ctx, toolbuiltin.TaskRequest{
+		Description:  "General cancellation case",
+		Prompt:       "general run",
+		SubagentType: subagents.TypeGeneralPurpose,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+}
+
+func TestTaskRunnerConvertsSubagentErrorFlag(t *testing.T) {
+	root := newClaudeProject(t)
+	mdl := &stubModel{}
+	def, ok := subagents.BuiltinDefinition(subagents.TypeGeneralPurpose)
+	if !ok {
+		t.Fatal("missing general-purpose definition")
+	}
+	rt, err := New(context.Background(), Options{ProjectRoot: root, Model: mdl, Subagents: []SubagentRegistration{{
+		Definition: def,
+		Handler: subagents.HandlerFunc(func(context.Context, subagents.Context, subagents.Request) (subagents.Result, error) {
+			return subagents.Result{Output: "", Error: "model refused"}, nil
+		}),
+	}}})
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+
+	runner := rt.taskRunner()
+	res, err := runner(context.Background(), toolbuiltin.TaskRequest{
+		Description:  "General error report",
+		Prompt:       "general run",
+		SubagentType: subagents.TypeGeneralPurpose,
+	})
+	if err != nil {
+		t.Fatalf("task runner: %v", err)
+	}
+	if res.Success {
+		t.Fatal("expected tool result to be marked unsuccessful")
+	}
+	if res.Output != "subagent general-purpose completed" {
+		t.Fatalf("unexpected default output: %q", res.Output)
+	}
+	data, ok := res.Data.(map[string]any)
+	if !ok || data == nil || data["subagent"] != subagents.TypeGeneralPurpose || data["error"] != "model refused" {
+		t.Fatalf("expected error metadata, got %+v", res.Data)
+	}
 }

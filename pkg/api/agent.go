@@ -95,7 +95,8 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		return nil, err
 	}
 	registry := tool.NewRegistry()
-	if err := registerTools(registry, opts, cfg, skReg, cmdExec); err != nil {
+	taskTool, err := registerTools(registry, opts, cfg, skReg, cmdExec)
+	if err != nil {
 		return nil, err
 	}
 	if err := registerMCPServers(registry, sbox, opts.MCPServers); err != nil {
@@ -106,7 +107,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	recorder := defaultHookRecorder()
 	hooks := newHookExecutor(opts, recorder)
 
-	return &Runtime{
+	rt := &Runtime{
 		opts:      opts,
 		mode:      mode,
 		loader:    loader,
@@ -121,7 +122,12 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		cmdExec:   cmdExec,
 		skReg:     skReg,
 		subMgr:    subMgr,
-	}, nil
+	}
+
+	if taskTool != nil {
+		taskTool.SetRunner(rt.taskRunner())
+	}
+	return rt, nil
 }
 
 // Run executes the unified pipeline synchronously.
@@ -255,10 +261,12 @@ func (rt *Runtime) prepare(ctx context.Context, req Request) (preparedRun, error
 	}
 	prompt = promptAfterSub
 
-	whitelist := make(map[string]struct{}, len(normalized.ToolWhitelist))
-	for _, name := range normalized.ToolWhitelist {
-		whitelist[name] = struct{}{}
+	def, builtin := subagents.BuiltinDefinition(normalized.TargetSubagent)
+	subCtx, hasSubCtx := buildSubagentContext(normalized, def, builtin)
+	if hasSubCtx {
+		ctx = subagents.WithContext(ctx, subCtx)
 	}
+	whitelist := combineToolWhitelists(normalized.ToolWhitelist, subCtx.ToolWhitelist)
 
 	return preparedRun{
 		ctx:            ctx,
@@ -418,19 +426,40 @@ func (rt *Runtime) executeSkills(ctx context.Context, prompt string, activation 
 }
 
 func (rt *Runtime) executeSubagent(ctx context.Context, prompt string, activation skills.ActivationContext, req *Request) (*subagents.Result, string, error) {
+	if req == nil {
+		return nil, prompt, nil
+	}
+
+	def, builtin := applySubagentTarget(req)
 	if rt.subMgr == nil {
 		return nil, prompt, nil
+	}
+	meta := map[string]any{
+		"entrypoint": req.Mode.EntryPoint,
+	}
+	if len(req.Metadata) > 0 {
+		if len(meta) == 0 {
+			meta = map[string]any{}
+		}
+		for k, v := range req.Metadata {
+			meta[k] = v
+		}
+	}
+	if session := strings.TrimSpace(req.SessionID); session != "" {
+		meta["session_id"] = session
 	}
 	request := subagents.Request{
 		Target:        req.TargetSubagent,
 		Instruction:   prompt,
 		Activation:    activation,
 		ToolWhitelist: cloneStrings(req.ToolWhitelist),
-		Metadata: map[string]any{
-			"entrypoint": req.Mode.EntryPoint,
-		},
+		Metadata:      meta,
 	}
-	res, err := rt.subMgr.Dispatch(ctx, request)
+	dispatchCtx := ctx
+	if subCtx, ok := buildSubagentContext(*req, def, builtin); ok {
+		dispatchCtx = subagents.WithContext(ctx, subCtx)
+	}
+	res, err := rt.subMgr.Dispatch(dispatchCtx, request)
 	if err != nil {
 		if errors.Is(err, subagents.ErrNoMatchingSubagent) && req.TargetSubagent == "" {
 			return nil, prompt, nil
@@ -445,6 +474,81 @@ func (rt *Runtime) executeSubagent(ctx context.Context, prompt string, activatio
 	mergeTags(req, res.Metadata)
 	applyCommandMetadata(req, res.Metadata)
 	return &res, prompt, nil
+}
+
+func (rt *Runtime) taskRunner() toolbuiltin.TaskRunner {
+	return func(ctx context.Context, req toolbuiltin.TaskRequest) (*tool.ToolResult, error) {
+		return rt.runTaskInvocation(ctx, req)
+	}
+}
+
+func (rt *Runtime) runTaskInvocation(ctx context.Context, req toolbuiltin.TaskRequest) (*tool.ToolResult, error) {
+	if rt == nil {
+		return nil, errors.New("api: runtime is nil")
+	}
+	if rt.subMgr == nil {
+		return nil, errors.New("api: subagent manager is not configured")
+	}
+	prompt := strings.TrimSpace(req.Prompt)
+	if prompt == "" {
+		return nil, errors.New("api: task prompt is empty")
+	}
+	sessionID := strings.TrimSpace(req.Resume)
+	if sessionID == "" {
+		sessionID = defaultSessionID(rt.mode.EntryPoint)
+	}
+	reqPayload := &Request{
+		Prompt:         prompt,
+		Mode:           rt.mode,
+		SessionID:      sessionID,
+		TargetSubagent: req.SubagentType,
+	}
+	if desc := strings.TrimSpace(req.Description); desc != "" {
+		reqPayload.Metadata = map[string]any{"task.description": desc}
+	}
+	if req.Model != "" {
+		if reqPayload.Metadata == nil {
+			reqPayload.Metadata = map[string]any{}
+		}
+		reqPayload.Metadata["task.model"] = req.Model
+	}
+	activation := skills.ActivationContext{Prompt: prompt}
+	if len(reqPayload.Metadata) > 0 {
+		activation.Metadata = maps.Clone(reqPayload.Metadata)
+	}
+	res, _, err := rt.executeSubagent(ctx, prompt, activation, reqPayload)
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return nil, errors.New("api: task execution returned no result")
+	}
+	return convertTaskToolResult(*res), nil
+}
+
+func convertTaskToolResult(res subagents.Result) *tool.ToolResult {
+	output := strings.TrimSpace(fmt.Sprint(res.Output))
+	if output == "" {
+		if res.Subagent != "" {
+			output = fmt.Sprintf("subagent %s completed", res.Subagent)
+		} else {
+			output = "subagent completed"
+		}
+	}
+	data := map[string]any{
+		"subagent": res.Subagent,
+	}
+	if len(res.Metadata) > 0 {
+		data["metadata"] = res.Metadata
+	}
+	if res.Error != "" {
+		data["error"] = res.Error
+	}
+	return &tool.ToolResult{
+		Success: res.Error == "",
+		Output:  output,
+		Data:    data,
+	}
 }
 
 func (rt *Runtime) mustModel() model.Model {
@@ -562,14 +666,36 @@ func (t *runtimeToolExecutor) measureUsage() sandbox.ResourceUsage {
 	return sandbox.ResourceUsage{MemoryBytes: stats.Alloc}
 }
 
+func (t *runtimeToolExecutor) isAllowed(ctx context.Context, name string) bool {
+	canon := canonicalToolName(name)
+	if canon == "" {
+		return false
+	}
+	reqAllowed := len(t.allow) == 0
+	if len(t.allow) > 0 {
+		_, reqAllowed = t.allow[canon]
+	}
+	subCtx, ok := subagents.FromContext(ctx)
+	if !ok || len(subCtx.ToolWhitelist) == 0 {
+		return reqAllowed
+	}
+	subSet := toLowerSet(subCtx.ToolWhitelist)
+	if len(subSet) == 0 {
+		return reqAllowed
+	}
+	_, subAllowed := subSet[canon]
+	if len(t.allow) == 0 {
+		return subAllowed
+	}
+	return reqAllowed && subAllowed
+}
+
 func (t *runtimeToolExecutor) Execute(ctx context.Context, call agent.ToolCall, _ *agent.Context) (agent.ToolResult, error) {
 	if t.executor == nil {
 		return agent.ToolResult{}, errors.New("tool executor not initialised")
 	}
-	if len(t.allow) > 0 {
-		if _, ok := t.allow[call.Name]; !ok {
-			return agent.ToolResult{}, fmt.Errorf("tool %s is not whitelisted", call.Name)
-		}
+	if !t.isAllowed(ctx, call.Name) {
+		return agent.ToolResult{}, fmt.Errorf("tool %s is not whitelisted", call.Name)
 	}
 	if err := t.hooks.PreToolUse(ctx, coreToolUsePayload(call)); err != nil {
 		return agent.ToolResult{}, err
@@ -677,12 +803,14 @@ func buildSandboxManager(opts Options, cfg *config.ProjectConfig) (*sandbox.Mana
 	return sandbox.NewManager(fs, nw, sandbox.NewResourceLimiter(opts.Sandbox.ResourceLimit)), root
 }
 
-func registerTools(registry *tool.Registry, opts Options, cfg *config.ProjectConfig, skReg *skills.Registry, cmdExec *commands.Executor) error {
+func registerTools(registry *tool.Registry, opts Options, cfg *config.ProjectConfig, skReg *skills.Registry, cmdExec *commands.Executor) (*toolbuiltin.TaskTool, error) {
 	tools := opts.Tools
+	var taskTool *toolbuiltin.TaskTool
+	entry := effectiveEntryPoint(opts)
 	if len(tools) == 0 {
 		bashTool := toolbuiltin.NewBashToolWithRoot(opts.ProjectRoot)
 		// CLI 模式下允许管道等 shell 元字符
-		if opts.EntryPoint == EntryPointCLI {
+		if entry == EntryPointCLI {
 			bashTool.AllowShellMetachars(true)
 		}
 		if skReg == nil {
@@ -705,17 +833,55 @@ func registerTools(registry *tool.Registry, opts Options, cfg *config.ProjectCon
 			toolbuiltin.NewGrepToolWithRoot(opts.ProjectRoot),
 			toolbuiltin.NewGlobToolWithRoot(opts.ProjectRoot),
 		}
+		if shouldRegisterTaskTool(entry) {
+			taskTool = toolbuiltin.NewTaskTool()
+			tools = append(tools, taskTool)
+		}
+	} else {
+		taskTool = locateTaskTool(tools)
 	}
 	for _, impl := range tools {
 		if impl == nil {
 			continue
 		}
 		if err := registry.Register(impl); err != nil {
-			return fmt.Errorf("api: register tool %s: %w", impl.Name(), err)
+			return nil, fmt.Errorf("api: register tool %s: %w", impl.Name(), err)
 		}
 	}
 	_ = cfg
+	return taskTool, nil
+}
+
+func shouldRegisterTaskTool(entry EntryPoint) bool {
+	switch entry {
+	case EntryPointCLI, EntryPointPlatform:
+		return true
+	default:
+		return false
+	}
+}
+
+func locateTaskTool(tools []tool.Tool) *toolbuiltin.TaskTool {
+	for _, impl := range tools {
+		if impl == nil {
+			continue
+		}
+		if task, ok := impl.(*toolbuiltin.TaskTool); ok {
+			return task
+		}
+	}
 	return nil
+}
+
+func effectiveEntryPoint(opts Options) EntryPoint {
+	entry := opts.EntryPoint
+	if entry == "" {
+		entry = opts.Mode.EntryPoint
+	}
+	if entry == "" {
+		entry = defaultEntrypoint
+	}
+	return entry
 }
 
 func registerMCPServers(registry *tool.Registry, manager *sandbox.Manager, servers []string) error {
@@ -782,8 +948,12 @@ func availableTools(registry *tool.Registry, whitelist map[string]struct{}) []mo
 		if name == "" {
 			continue
 		}
+		canon := canonicalToolName(name)
+		if canon == "" {
+			continue
+		}
 		if len(whitelist) > 0 {
-			if _, ok := whitelist[name]; !ok {
+			if _, ok := whitelist[canon]; !ok {
 				continue
 			}
 		}
@@ -1050,6 +1220,103 @@ func applyCommandMetadata(req *Request, meta map[string]any) {
 	}
 	if wl := stringSlice(meta["api.tool_whitelist"]); len(wl) > 0 {
 		req.ToolWhitelist = wl
+	}
+}
+
+func applySubagentTarget(req *Request) (subagents.Definition, bool) {
+	if req == nil {
+		return subagents.Definition{}, false
+	}
+	target := strings.TrimSpace(req.TargetSubagent)
+	if target == "" {
+		req.TargetSubagent = ""
+		return subagents.Definition{}, false
+	}
+	if def, ok := subagents.BuiltinDefinition(target); ok {
+		req.TargetSubagent = def.Name
+		return def, true
+	}
+	req.TargetSubagent = canonicalToolName(target)
+	return subagents.Definition{}, false
+}
+
+func buildSubagentContext(req Request, def subagents.Definition, matched bool) (subagents.Context, bool) {
+	var subCtx subagents.Context
+	if matched {
+		subCtx = def.BaseContext.Clone()
+	}
+	if session := strings.TrimSpace(req.SessionID); session != "" {
+		subCtx.SessionID = session
+	}
+	if desc := metadataString(req.Metadata, "task.description"); desc != "" {
+		if subCtx.Metadata == nil {
+			subCtx.Metadata = map[string]any{}
+		}
+		subCtx.Metadata["task.description"] = desc
+	}
+	if model := strings.ToLower(metadataString(req.Metadata, "task.model")); model != "" {
+		if subCtx.Metadata == nil {
+			subCtx.Metadata = map[string]any{}
+		}
+		subCtx.Metadata["task.model"] = model
+		if strings.TrimSpace(subCtx.Model) == "" {
+			subCtx.Model = model
+		}
+	}
+	if subCtx.SessionID == "" && len(subCtx.Metadata) == 0 && len(subCtx.ToolWhitelist) == 0 && strings.TrimSpace(subCtx.Model) == "" {
+		return subagents.Context{}, false
+	}
+	return subCtx, true
+}
+
+func metadataString(meta map[string]any, key string) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	if val, ok := anyToString(meta[key]); ok {
+		return val
+	}
+	return ""
+}
+
+func canonicalToolName(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func toLowerSet(values []string) map[string]struct{} {
+	if len(values) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if key := canonicalToolName(value); key != "" {
+			set[key] = struct{}{}
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return set
+}
+
+func combineToolWhitelists(requested []string, subagent []string) map[string]struct{} {
+	reqSet := toLowerSet(requested)
+	subSet := toLowerSet(subagent)
+	switch {
+	case len(reqSet) == 0 && len(subSet) == 0:
+		return nil
+	case len(reqSet) == 0:
+		return subSet
+	case len(subSet) == 0:
+		return reqSet
+	default:
+		intersection := make(map[string]struct{}, len(subSet))
+		for name := range subSet {
+			if _, ok := reqSet[name]; ok {
+				intersection[name] = struct{}{}
+			}
+		}
+		return intersection
 	}
 }
 

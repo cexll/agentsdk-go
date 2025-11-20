@@ -129,11 +129,14 @@ func TestBuildSandboxManager(t *testing.T) {
 func TestRegisterToolsUsesDefaultImplementations(t *testing.T) {
 	registry := tool.NewRegistry()
 	opts := Options{ProjectRoot: t.TempDir()}
-	if err := registerTools(registry, opts, &config.ProjectConfig{}, nil, nil); err != nil {
+	if taskTool, err := registerTools(registry, opts, &config.ProjectConfig{}, nil, nil); err != nil {
 		t.Fatalf("register tools: %v", err)
+		_ = taskTool
+	} else if taskTool == nil {
+		t.Fatal("expected task tool to be registered")
 	}
 	tools := registry.List()
-	expected := []string{"Bash", "Read", "Write", "Edit", "WebFetch", "WebSearch", "BashOutput", "TodoWrite", "Skill", "SlashCommand", "Grep", "Glob"}
+	expected := []string{"Bash", "Read", "Write", "Edit", "WebFetch", "WebSearch", "BashOutput", "TodoWrite", "Skill", "SlashCommand", "Grep", "Glob", "Task"}
 	if len(tools) != len(expected) {
 		t.Fatalf("expected %d default tools, got %d", len(expected), len(tools))
 	}
@@ -154,8 +157,11 @@ func TestRegisterToolsUsesDefaultImplementations(t *testing.T) {
 func TestRegisterToolsSkipsNilEntries(t *testing.T) {
 	registry := tool.NewRegistry()
 	opts := Options{ProjectRoot: t.TempDir(), Tools: []tool.Tool{nil, &echoTool{}}}
-	if err := registerTools(registry, opts, &config.ProjectConfig{}, nil, nil); err != nil {
+	if taskTool, err := registerTools(registry, opts, &config.ProjectConfig{}, nil, nil); err != nil {
 		t.Fatalf("register tools: %v", err)
+		_ = taskTool
+	} else if taskTool != nil {
+		t.Fatalf("task tool should not be auto-wired when custom tools provided")
 	}
 	tools := registry.List()
 	if len(tools) != 1 || tools[0].Name() != "echo" {

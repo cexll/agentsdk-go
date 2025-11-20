@@ -149,6 +149,13 @@ type Options struct {
 	Sandbox SandboxOptions
 }
 
+// DefaultSubagentDefinitions exposes the built-in subagent type catalog so
+// callers can seed api.Options.Subagents or extend the metadata when wiring
+// custom handlers.
+func DefaultSubagentDefinitions() []subagents.Definition {
+	return subagents.BuiltinDefinitions()
+}
+
 // Request captures a single logical run invocation. Tags/T traits/Channels are
 // forwarded to the declarative runtime layers (skills/subagents) while
 // RunContext overrides the agent-level execution knobs.
