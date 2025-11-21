@@ -2,124 +2,60 @@
 
 # agentsdk-go Examples
 
-All examples can be run from the repository root.
+Four progressively richer examples. Run everything from the repo root.
 
-**Hardening notes**
-- Sandbox resource limits (CPU/memory/disk) are enabled by default to keep tools from over-consuming.
-- historyStore uses LRU; `MaxSessions` defaults to 500 to prevent memory leaks during long runs.
+**Environment Setup**
 
-## settings.json
-All examples read the official `.claude/settings.json`. A minimal starter (also stored at `examples/middleware/.claude/settings.json`):
-```json
-{
-  "permissions": {
-    "allow": [
-      "Bash(ls:*)",
-      "Bash(pwd:*)",
-      "Read(**/*.go)"
-    ]
-  },
-  "env": {
-    "EXAMPLE_VAR": "value"
-  },
-  "sandbox": {
-    "enabled": false
-  }
-}
-```
-
-## cli
-Minimal CLI flow that calls the Anthropic provider directly. The SDK now reads `.claude/settings.json` (official Claude format); point `AGENTSDK_PROJECT_ROOT` to a directory that already has one or create a minimal file using the snippet in `examples/middleware/.claude/settings.json`.
-
+1. Copy `.env.example` to `.env` and set your API key:
 ```bash
-export ANTHROPIC_API_KEY=sk-...
-go run ./examples/cli
+cp .env.example .env
+# Edit .env and set ANTHROPIC_API_KEY=sk-ant-your-key-here
 ```
 
-Environment variables:
-- Required: `ANTHROPIC_API_KEY`
-- Optional: `AGENTSDK_PROJECT_ROOT` (skip temp config when pointing to an existing `.claude` directory), `ANTHROPIC_BASE_URL` (proxy/mirror), `HTTP_PROXY`/`HTTPS_PROXY`
-
-## http
-HTTP API implemented with the standard library (`/v1/run`, `/v1/run/stream`, `/v1/tools/execute`); relies on the sandbox and LRU session limits by default.
-
+2. Load environment variables:
 ```bash
-export ANTHROPIC_API_KEY=sk-...
-export AGENTSDK_HTTP_ADDR=":8080"           # optional
-export AGENTSDK_MAX_SESSIONS=500            # LRU cap to prevent memory leaks
-curl -s http://localhost:8080/health || true
+source .env
 ```
 
-Key environment variables:
-- Model: `ANTHROPIC_API_KEY` (required), `ANTHROPIC_BASE_URL` (proxy/mirror optional)
-- Base: `AGENTSDK_HTTP_ADDR`, `AGENTSDK_PROJECT_ROOT`, `AGENTSDK_SANDBOX_ROOT`, `AGENTSDK_MODEL` (ensure the target root contains `.claude/settings.json`)
-- Network: `AGENTSDK_NETWORK_ALLOW` (comma-separated allowlist, default `api.anthropic.com`)
-- Timeout: `AGENTSDK_DEFAULT_TIMEOUT`, `AGENTSDK_MAX_TIMEOUT`
-- Resources: `AGENTSDK_RESOURCE_CPU_PERCENT`, `AGENTSDK_RESOURCE_MEMORY_MB`, `AGENTSDK_RESOURCE_DISK_MB`, `AGENTSDK_MAX_BODY_BYTES`, `AGENTSDK_MAX_SESSIONS`
-
-## mcp
-Demonstrates connecting to `mcp-server-time` via stdio and invoking MCP tools.
-
+Alternatively, export directly:
 ```bash
-uv tool install mcp-server-time  # install if missing
-uvx mcp-server-time --help       # verify availability
-go run ./examples/mcp
+export ANTHROPIC_API_KEY=sk-ant-your-key-here
 ```
 
-Requirements: `uv`/`uvx` in PATH; no API key needed.
+**Learning path**
+- `01-basic` (32 lines): single API call, minimal surface, prints one response.
+- `02-cli` (73 lines): CLI REPL with session history and optional config loading.
+- `03-http` (~300 lines): REST + SSE server on `:8080`, production-ready wiring.
+- `04-advanced` (~1400 lines): full stack with middleware, hooks, MCP, sandbox, skills, subagents.
 
-## hooks
-Pure local demo of the hooks executor covering 7 lifecycle callbacks and middleware logs, with deduplication and timeout control; no API key required.
-
+## 01-basic — minimal entry
+- Purpose: fastest way to see the SDK loop in action with one request/response.
+- Run:
 ```bash
-go run ./examples/hooks -prompt "自检沙箱配置" -session hooks-demo -tool log_scan
+source .env
+go run ./examples/01-basic
 ```
 
-Tunable flags: `-hook-timeout`, `-dedup-window`, `-tool-latency`.
-
-## sandbox
-Exercises the filesystem/network/resource triple sandbox strategy: first run through allowed paths then trigger limits; creates a temporary workspace by default; no API key required.
-
+## 02-cli — interactive REPL
+- Key features: interactive prompt, per-session history, optional `.claude/settings.json` load.
+- Run:
 ```bash
-go run ./examples/sandbox
+source .env
+go run ./examples/02-cli --session-id demo --settings-path .claude/settings.json
 ```
 
-Optional flags: `--root`, `--allow-host`/`--deny-host`, `--cpu-limit`/`--mem-mb`/`--disk-mb`.
-
-## skills
-Shows runtime/skills registration, auto activation (matcher + priority/mutual exclusion) and manual execution.
-
+## 03-http — REST + SSE
+- Key features: `/health`, `/v1/run` (blocking), `/v1/run/stream` (SSE, 15s heartbeat); defaults to `:8080`.
+- Run:
 ```bash
-go run ./examples/skills \
-  -prompt "分析生产日志发现异常 SSH 尝试" \
-  -env prod -severity high \
-  -channels cli,slack -traits sre,security
+source .env
+go run ./examples/03-http
 ```
 
-Key flags: `-manual-skill`, `-timeout`.
-
-## subagents
-Minimal runtime/subagents usage: auto-select subagents via matchers or force dispatch; no API key required.
-
+## 04-advanced — full integration
+- Key features: end-to-end pipeline with middleware chain, hooks, MCP client, sandbox controls, skills, subagents, streaming output.
+- Run:
 ```bash
-go run ./examples/subagents                      # auto selection
-go run ./examples/subagents -target plan         # force dispatch
-go run ./examples/subagents -prompt "scan logs"  # trigger explore path
+source .env
+go run ./examples/04-advanced --prompt "安全巡检" --enable-mcp=false
 ```
-
-## commands
-Example of parsing/executing slash commands; supports quotes, escapes, `--flag` and `--flag=value`; built-in input script; no API key required.
-
-```bash
-go run ./examples/commands
-```
-
-## plugins
-Demonstrates pkg/plugins TrustStore, manifest loading, and directory scan; validates signatures then prints plugin info.
-
-```bash
-go run ./examples/plugins                 # signature verification by default
-go run ./examples/plugins -allow-unsigned # allow unsigned manifests
-```
-
-Default scan path `examples/plugins`; no API key required.

@@ -1,0 +1,19 @@
+{
+  "name": "advanced-sample",
+  "version": "1.0.0",
+  "description": "Demo plugin for the advanced example",
+  "author": "agentsdk-go",
+  "commands": [
+    "demo"
+  ],
+  "agents": [
+    "synth"
+  ],
+  "skills": [
+    "sample"
+  ],
+  "hooks": {
+    "pre_tool_use": ["observe_logs"],
+    "post_tool_use": ["observe_logs"]
+  }
+}

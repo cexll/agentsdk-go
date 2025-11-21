@@ -1,0 +1,37 @@
+# 03-http: Minimal HTTP API
+
+The leanest HTTP example: one shared `api.Runtime`, three endpoints, zero extra middleware.
+
+## Run
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+go run ./examples/03-http
+```
+Defaults to `:8080`. Override with `AGENTSDK_HTTP_ADDR`. Choose a model with `AGENTSDK_MODEL` (default `claude-3-5-sonnet-20241022`).
+
+## Endpoints
+- `GET /health` → `{"status":"ok"}`
+- `POST /v1/run` → blocking JSON response
+- `POST /v1/run/stream` → Server-Sent Events (ping every 15s)
+
+## Request Body
+```json
+{
+  "prompt": "Summarize agentsdk-go in one sentence",
+  "session_id": "demo-123",          // optional; auto-generated when missing
+  "timeout_ms": 30000                // optional
+}
+```
+
+## Examples
+```bash
+# Sync call
+curl -sS -X POST http://localhost:8080/v1/run \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"hello"}'
+
+# Streaming
+curl --no-buffer -N -X POST http://localhost:8080/v1/run/stream \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"list examples"}'
+```

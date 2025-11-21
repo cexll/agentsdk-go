@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Web Chat</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --card: #1f2937;
+      --accent: #3b82f6;
+      --accent-soft: #dbeafe;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --tool: #fbbf24;
+      --tool-bg: #fef3c7;
+      --error: #ef4444;
+      --success: #10b981;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top left, rgba(59,130,246,0.08), transparent 35%),
+                  radial-gradient(circle at 20% 40%, rgba(16,185,129,0.08), transparent 30%),
+                  var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      padding: 24px 14px;
+    }
+
+    .app {
+      width: min(960px, 100%);
+      background: var(--panel);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 14px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    header {
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: linear-gradient(90deg, rgba(59,130,246,0.15), rgba(16,185,129,0.1));
+    }
+
+    header h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+
+    header .pill {
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    #chat {
+      padding: 18px 16px 10px;
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      scroll-behavior: smooth;
+    }
+
+    .bubble {
+      background: var(--card);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 12px;
+      padding: 10px 12px;
+      max-width: 100%;
+      width: fit-content;
+      display: grid;
+      gap: 6px;
+      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.35);
+    }
+
+    .bubble.user { margin-left: auto; background: rgba(59,130,246,0.12); border-color: rgba(59,130,246,0.3); }
+    .bubble.assistant { margin-right: auto; }
+    .bubble.system { margin-right: auto; background: rgba(239,68,68,0.08); border-color: rgba(239,68,68,0.3); }
+    .bubble.tool { margin-right: auto; background: var(--tool-bg); color: #3b2f03; border-color: rgba(251,191,36,0.5); }
+    .bubble.tool .text { color: #3b2f03; }
+
+    .meta {
+      font-size: 12px;
+      color: var(--muted);
+      letter-spacing: 0.2px;
+    }
+
+    .text {
+      white-space: pre-wrap;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .streaming::after {
+      content: " " "▍";
+      opacity: 0.7;
+      animation: blink 1s steps(1) infinite;
+    }
+
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
+
+    .toolbar {
+      padding: 10px 16px 14px;
+      border-top: 1px solid rgba(255, 255, 255, 0.07);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      background: linear-gradient(to top, rgba(0,0,0,0.18), transparent);
+    }
+
+    .controls {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 70px;
+      max-height: 180px;
+      resize: vertical;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 14px;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    textarea:focus {
+      outline: none;
+      border-color: rgba(59,130,246,0.6);
+      box-shadow: 0 0 0 2px rgba(59,130,246,0.2);
+    }
+
+    button {
+      border: none;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: transform 0.08s ease, box-shadow 0.15s ease, background 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 600;
+    }
+
+    button.primary {
+      background: var(--accent);
+      color: white;
+      box-shadow: 0 10px 25px rgba(59,130,246,0.35);
+    }
+
+    button.ghost {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
+    }
+
+    button:disabled { opacity: 0.55; cursor: not-allowed; box-shadow: none; }
+    button:not(:disabled):active { transform: translateY(1px); }
+
+    .status {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    @media (max-width: 640px) {
+      body { padding: 12px; }
+      header { flex-wrap: wrap; }
+      textarea { min-height: 90px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Agent 对话</h1>
+      <span class="pill">session: web-chat-session</span>
+      <span class="status" id="status"></span>
+      <div style="margin-left:auto; display:flex; gap:8px;">
+        <button class="ghost" id="clear">清空</button>
+      </div>
+    </header>
+
+    <main id="chat" aria-live="polite"></main>
+
+    <div class="toolbar">
+      <form id="composer" class="controls">
+        <textarea id="prompt" name="prompt" placeholder="输入你的问题，Shift+Enter 换行" required></textarea>
+        <div class="controls" style="width: 100%; justify-content: space-between;">
+          <div class="status" id="hint">使用 POST /v1/run/stream，SSE 实时返回</div>
+          <button type="submit" class="primary" id="send">发送</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    // 常量设定
+    const SESSION_ID = 'web-chat-session';
+    const ENDPOINT = '/v1/run/stream';
+
+    // DOM 引用
+    const chatEl = document.getElementById('chat');
+    const formEl = document.getElementById('composer');
+    const promptEl = document.getElementById('prompt');
+    const sendBtn = document.getElementById('send');
+    const clearBtn = document.getElementById('clear');
+    const statusEl = document.getElementById('status');
+
+    // 状态变量
+    let controller = null;           // 当前请求的 AbortController
+    let assistantBubble = null;      // 正在流式写入的助手气泡
+    const blockState = new Map();    // index -> {type,id,name}
+    const toolInputs = new Map();    // tool_use_id -> 输入累积字符串
+    const toolBubbles = new Map();   // tool_use_id -> DOM
+    let busyNote = '';               // 顶部状态栏内的忙碌提示
+    let usageNote = '';              // 顶部状态栏内的用量信息
+
+    // 工具函数：创建聊天气泡
+    function addBubble(role, text = '', title = '') {
+      const wrap = document.createElement('div');
+      wrap.className = `bubble ${role}`;
+
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = title || (role === 'user' ? '用户' : role === 'assistant' ? '助手' : '事件');
+
+      const body = document.createElement('div');
+      body.className = 'text';
+      body.textContent = text;
+
+      wrap.append(meta, body);
+      chatEl.appendChild(wrap);
+      chatEl.scrollTop = chatEl.scrollHeight;
+      return { wrap, body };
+    }
+
+    // 工具函数：格式化 JSON，失败则返回原串
+    function prettyJSON(raw) {
+      try {
+        return JSON.stringify(JSON.parse(raw), null, 2);
+      } catch (_) {
+        return raw;
+      }
+    }
+
+    // 工具函数：刷新头部状态提示
+    function refreshStatus() {
+      if (busyNote && usageNote) {
+        statusEl.textContent = `${busyNote} · ${usageNote}`;
+      } else {
+        statusEl.textContent = busyNote || usageNote;
+      }
+    }
+
+    // 工具函数：更新忙碌状态并锁定输入
+    function setBusy(isBusy, msg = '') {
+      sendBtn.disabled = isBusy;
+      promptEl.disabled = isBusy;
+      busyNote = isBusy ? msg : '';
+      refreshStatus();
+    }
+
+    // 工具函数：格式化 usage 信息
+    function formatUsage(usage) {
+      if (!usage || typeof usage !== 'object') return '';
+      const input = usage.input_tokens ?? usage.InputTokens ?? usage.inputTokens;
+      const output = usage.output_tokens ?? usage.OutputTokens ?? usage.outputTokens;
+      const total = usage.total_tokens ?? usage.TotalTokens ?? usage.totalTokens;
+      const durationMs = usage.duration_ms ?? usage.DurationMs ?? usage.durationMs;
+      const cost = usage.cost ?? usage.Cost ?? usage.credits ?? usage.Credits;
+
+      const parts = [];
+      if (total !== undefined) parts.push(`总 ${total} tokens`);
+      const io = [
+        input !== undefined ? `入 ${input}` : null,
+        output !== undefined ? `出 ${output}` : null,
+      ].filter(Boolean).join(' / ');
+      if (io) parts.push(io);
+      const duration = Number(durationMs);
+      if (!Number.isNaN(duration) && duration >= 0) {
+        parts.push(`耗时 ${(duration / 1000).toFixed(2)}s`);
+      }
+      if (cost !== undefined) {
+        const costText = typeof cost === 'number' ? `$${cost}` : String(cost);
+        parts.push(`成本 ${costText}`);
+      }
+      return parts.length ? `用量：${parts.join(' · ')}` : '';
+    }
+
+    // 工具函数：写入 usage 信息并展示
+    function updateUsageInfo(usage) {
+      const text = formatUsage(usage);
+      if (!text) return;
+      usageNote = text;
+      refreshStatus();
+    }
+
+    // 处理文本流，确保同一轮回答复用一个助手气泡
+    function updateAssistantText(chunk, isStreaming = true) {
+      if (!assistantBubble) {
+        assistantBubble = addBubble('assistant', '');
+      }
+      assistantBubble.body.textContent += chunk;
+      assistantBubble.body.classList.toggle('streaming', isStreaming);
+      chatEl.scrollTop = chatEl.scrollHeight;
+    }
+
+    // 获取或创建工具气泡
+    function getToolBubble(id, name, titleSuffix = '') {
+      if (toolBubbles.has(id)) return toolBubbles.get(id);
+      const label = titleSuffix ? `${name} ${titleSuffix}` : name;
+      const bubble = addBubble('tool', '', `工具 · ${label}`);
+      toolBubbles.set(id, bubble);
+      return bubble;
+    }
+
+    // 解析 SSE block（\n\n 分割后的一段）
+    function parseSSEBlock(block) {
+      const lines = block.split('\n');
+      const dataLines = [];
+      for (const line of lines) {
+        if (line.startsWith('data:')) {
+          dataLines.push(line.slice(5).trim());
+        }
+      }
+      if (!dataLines.length) return null;
+      const jsonStr = dataLines.join('\n');
+      try {
+        return JSON.parse(jsonStr);
+      } catch (err) {
+        addBubble('system', `解析事件失败: ${err.message}`, '错误');
+        return null;
+      }
+    }
+
+    // 处理服务端事件
+    function handleEvent(evt) {
+      if (!evt || !evt.type) return;
+      switch (evt.type) {
+        // agent_start：Agent 生命周期开始
+        case 'agent_start':
+          addBubble('system', '🤖 Agent 启动', '系统');
+          break;
+        // agent_stop：Agent 结束
+        case 'agent_stop':
+          addBubble('system', '✅ Agent 完成', '系统');
+          break;
+        // iteration_start：一次循环推理开始，展示迭代次数
+        case 'iteration_start': {
+          const iter = evt.iteration ?? evt.Iteration;
+          const label = iter !== undefined ? `迭代 #${iter}` : '迭代开始';
+          addBubble('system', `♻️ ${label}`, '系统');
+          break;
+        }
+        // iteration_stop：结束事件静默处理，避免噪音
+        case 'iteration_stop':
+          break;
+        // message_start：新的助手消息开始
+        case 'message_start':
+          assistantBubble = addBubble('assistant', '', '助手');
+          blockState.clear();
+          break;
+        // message_delta：累计 usage 等元信息
+        case 'message_delta':
+          updateUsageInfo(evt.usage ?? evt.Usage);
+          break;
+        // content_block_start：记录当前 block 元信息（文本或工具）
+        case 'content_block_start': {
+          const idx = evt.index ?? evt.Index;
+          const info = {
+            type: evt.content_block?.type || evt.ContentBlock?.Type,
+            id: evt.content_block?.id || evt.ContentBlock?.ID,
+            name: evt.content_block?.name || evt.ContentBlock?.Name,
+          };
+          if (idx !== undefined) blockState.set(idx, info);
+          if (info.type === 'tool_use') {
+            const key = info.id || `tool-${idx ?? '0'}`;
+            getToolBubble(key, info.name || 'tool', '入参');
+          }
+          break;
+        }
+        // content_block_delta：文本流或工具入参增量
+        case 'content_block_delta': {
+          const idx = evt.index ?? evt.Index;
+          const info = idx !== undefined ? blockState.get(idx) : null;
+          if (info?.type === 'text' && evt.delta?.type === 'text_delta' && evt.delta.text) {
+            updateAssistantText(evt.delta.text, true);
+          } else if (info?.type === 'tool_use' && evt.delta?.type === 'input_json_delta') {
+            const key = info.id || `tool-${idx ?? '0'}`;
+            const name = info.name || 'tool';
+            const bubble = getToolBubble(key, name, '入参');
+            const chunk = evt.delta.partial_json || '';
+            const merged = (toolInputs.get(key) || '') + chunk;
+            toolInputs.set(key, merged);
+            bubble.body.textContent = prettyJSON(merged);
+          }
+          break;
+        }
+        // content_block_stop：单个 block 已完成
+        case 'content_block_stop':
+          if (assistantBubble) assistantBubble.body.classList.remove('streaming');
+          if (evt.index !== undefined) blockState.delete(evt.index);
+          if (evt.Index !== undefined) blockState.delete(evt.Index);
+          break;
+        // message_stop：整条消息结束，停止闪烁
+        case 'message_stop':
+          if (assistantBubble) assistantBubble.body.classList.remove('streaming');
+          assistantBubble = null;
+          break;
+        // tool_execution_start：工具开始执行，提示状态
+        case 'tool_execution_start': {
+          const key = evt.tool_use_id || evt.ToolUseID || evt.content_block?.id || 'tool';
+          const toolName = evt.name || evt.tool_name || 'tool';
+          const bubble = getToolBubble(key, toolName, '执行');
+          bubble.body.textContent = `⏳ ${toolName} - 执行中`;
+          bubble.wrap.classList.add('streaming');
+          break;
+        }
+        // tool_execution_output：持续输出工具产物
+        case 'tool_execution_output': {
+          const key = evt.tool_use_id || evt.ToolUseID || 'tool';
+          const toolName = evt.name || evt.tool_name || 'tool';
+          const bubble = getToolBubble(key, toolName, '执行');
+          bubble.wrap.classList.add('streaming');
+          const raw = evt.output ?? evt.Output ?? '';
+          const chunk = typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2);
+          bubble.body.textContent += (bubble.body.textContent ? '\n' : '') + chunk;
+          break;
+        }
+        // tool_execution_result：工具完成并输出 JSON 结构
+        case 'tool_execution_result': {
+          const key = evt.tool_use_id || evt.ToolUseID || 'tool';
+          const toolName = evt.name || evt.tool_name || 'tool';
+          const bubble = getToolBubble(key, toolName, '完成');
+          bubble.wrap.classList.remove('streaming');
+          const payload = evt.output ?? evt.Output;
+          let formatted = '';
+          if (payload !== undefined) {
+            formatted = typeof payload === 'string' ? prettyJSON(payload) : JSON.stringify(payload, null, 2);
+          }
+          bubble.body.textContent = `✅ ${toolName} - 完成${formatted ? `\n${formatted}` : ''}`;
+          break;
+        }
+        // error：高亮展示错误详情
+        case 'error': {
+          const detail = evt.output ?? evt.message ?? evt.error ?? evt.Error ?? evt.details ?? '未知错误';
+          const text = typeof detail === 'object' ? JSON.stringify(detail, null, 2) : String(detail);
+          addBubble('system', `❌ ${text}`, '错误');
+          break;
+        }
+        // ping：保持连接心跳，不渲染
+        case 'ping':
+          break;
+        // 其他事件：直接打印原始 JSON，方便排查
+        default:
+          addBubble('system', JSON.stringify(evt, null, 2), evt.type);
+      }
+    }
+
+    // 发送请求并消费 SSE 流
+    async function sendPrompt(prompt) {
+      controller = new AbortController();
+      setBusy(true, '思考中…');
+      blockState.clear();
+
+      const payload = JSON.stringify({ prompt, session_id: SESSION_ID });
+      let response;
+      try {
+        response = await fetch(ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+          signal: controller.signal,
+        });
+      } catch (err) {
+        addBubble('system', `请求失败：${err.message}`, '错误');
+        setBusy(false, '');
+        controller = null;
+        return;
+      }
+
+      if (!response.ok || !response.body) {
+        addBubble('system', `服务返回 ${response.status}`, '错误');
+        setBusy(false, '');
+        controller = null;
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          let sep = buffer.indexOf('\n\n');
+          while (sep !== -1) {
+            const chunk = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            const evt = parseSSEBlock(chunk.trim());
+            if (evt) {
+              handleEvent(evt);
+              if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
+                // 让出事件循环，避免批量渲染，保障文本逐字符实时刷新
+                await new Promise((resolve) => setTimeout(resolve, 0));
+              }
+            }
+            sep = buffer.indexOf('\n\n');
+          }
+        }
+      } catch (err) {
+        addBubble('system', `流中断：${err.message}`, '错误');
+      } finally {
+        setBusy(false, '');
+        controller = null;
+        if (assistantBubble) assistantBubble.body.classList.remove('streaming');
+        toolBubbles.forEach(b => b.wrap.classList.remove('streaming'));
+      }
+    }
+
+    // 发送表单
+    formEl.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const prompt = promptEl.value.trim();
+      if (!prompt) return;
+      addBubble('user', prompt, '用户');
+      promptEl.value = '';
+      sendPrompt(prompt);
+    });
+
+    // Shift+Enter 换行，Enter 直接发送
+    promptEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        formEl.dispatchEvent(new Event('submit'));
+      }
+    });
+
+    // 清空对话，必要时中断当前流
+    clearBtn.addEventListener('click', () => {
+      chatEl.innerHTML = '';
+      toolInputs.clear();
+      toolBubbles.clear();
+      blockState.clear();
+      assistantBubble = null;
+      if (controller) controller.abort();
+      usageNote = '';
+      setBusy(false, '');
+    });
+
+    // 初始提示
+    addBubble('assistant', '你好，输入问题即可开始对话。', '提示');
+  </script>
+</body>
+</html>
