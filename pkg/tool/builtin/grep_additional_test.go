@@ -80,7 +80,7 @@ func TestSearchFileTruncatesAtLimit(t *testing.T) {
 	tool.maxResults = 1
 	re := regexp.MustCompile("hit")
 	var matches []GrepMatch
-	truncated, err := tool.searchFile(context.Background(), target, re, 0, &matches)
+	truncated, err := tool.searchFile(context.Background(), target, re, grepSearchOptions{}, &matches)
 	if err != nil {
 		t.Fatalf("searchFile failed: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestGrepSearchDirectoryRespectsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var matches []GrepMatch
-	if _, err := tool.searchDirectory(ctx, dir, regexp.MustCompile("hit"), 0, &matches); err == nil || !strings.Contains(err.Error(), "context canceled") {
+	if _, err := tool.searchDirectory(ctx, dir, regexp.MustCompile("hit"), grepSearchOptions{}, &matches); err == nil || !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("expected cancellation error, got %v", err)
 	}
 }
@@ -123,7 +123,7 @@ func TestGrepSearchDirectoryHonorsDepthLimit(t *testing.T) {
 	tool := NewGrepToolWithRoot(dir)
 	tool.maxDepth = 0
 	var matches []GrepMatch
-	truncated, err := tool.searchDirectory(context.Background(), dir, regexp.MustCompile("hit"), 0, &matches)
+	truncated, err := tool.searchDirectory(context.Background(), dir, regexp.MustCompile("hit"), grepSearchOptions{}, &matches)
 	if err != nil {
 		t.Fatalf("searchDirectory failed: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestGrepSearchDirectorySkipsSymlinkDirs(t *testing.T) {
 	}
 	tool := NewGrepToolWithRoot(dir)
 	var matches []GrepMatch
-	truncated, err := tool.searchDirectory(context.Background(), dir, regexp.MustCompile("hit"), 0, &matches)
+	truncated, err := tool.searchDirectory(context.Background(), dir, regexp.MustCompile("hit"), grepSearchOptions{}, &matches)
 	if err != nil {
 		t.Fatalf("searchDirectory failed: %v", err)
 	}

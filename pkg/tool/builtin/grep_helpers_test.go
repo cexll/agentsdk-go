@@ -58,7 +58,7 @@ func TestSearchDirectoryCancelled(t *testing.T) {
 	cancel()
 	tool := NewGrepToolWithRoot(".")
 	var matches []GrepMatch
-	if _, err := tool.searchDirectory(ctx, ".", regexp.MustCompile("noop"), 0, &matches); err == nil {
+	if _, err := tool.searchDirectory(ctx, ".", regexp.MustCompile("noop"), grepSearchOptions{}, &matches); err == nil {
 		t.Fatalf("expected cancellation error")
 	}
 }
@@ -76,7 +76,7 @@ func TestResolveSearchPathErrors(t *testing.T) {
 func TestSearchDirectoryMissingRoot(t *testing.T) {
 	tool := NewGrepToolWithRoot(".")
 	var matches []GrepMatch
-	if _, err := tool.searchDirectory(context.Background(), "/tmp/definitely-missing", regexp.MustCompile("noop"), 0, &matches); err == nil {
+	if _, err := tool.searchDirectory(context.Background(), "/tmp/definitely-missing", regexp.MustCompile("noop"), grepSearchOptions{}, &matches); err == nil {
 		t.Fatalf("expected walk error")
 	}
 }
