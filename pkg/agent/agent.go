@@ -149,10 +149,12 @@ func (a *Agent) Run(ctx context.Context, c *Context) (*ModelOutput, error) {
 			return out, nil
 		}
 
+		var firstMiddlewareErr error
+
 		for _, call := range out.ToolCalls {
 			state.ToolCall = call
-			if err := a.mw.Execute(ctx, middleware.StageBeforeTool, state); err != nil {
-				return last, err
+			if err := a.mw.Execute(ctx, middleware.StageBeforeTool, state); err != nil && firstMiddlewareErr == nil {
+				firstMiddlewareErr = err
 			}
 
 			if a.tools == nil {
@@ -173,9 +175,13 @@ func (a *Agent) Run(ctx context.Context, c *Context) (*ModelOutput, error) {
 			c.ToolResults = append(c.ToolResults, res)
 			state.ToolResult = res
 
-			if err := a.mw.Execute(ctx, middleware.StageAfterTool, state); err != nil {
-				return last, err
+			if err := a.mw.Execute(ctx, middleware.StageAfterTool, state); err != nil && firstMiddlewareErr == nil {
+				firstMiddlewareErr = err
 			}
+		}
+
+		if firstMiddlewareErr != nil {
+			return last, firstMiddlewareErr
 		}
 
 		iteration++

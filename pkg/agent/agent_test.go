@@ -394,6 +394,61 @@ func TestRunAfterToolMiddlewareError(t *testing.T) {
 	}
 }
 
+func TestAgent_Run_MultipleToolCallsWithMiddlewareError(t *testing.T) {
+	sentinel := errors.New("after tool middleware error")
+	cases := []struct {
+		name string
+	}{
+		{name: "returns middleware error after executing all tools"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := NewContext()
+			model := &scriptedModel{
+				outputs: []*ModelOutput{
+					{ToolCalls: []ToolCall{
+						{ID: "call-1", Name: "first"},
+						{ID: "call-2", Name: "second"},
+					}},
+				},
+			}
+			tools := &stubTools{}
+
+			afterToolCount := 0
+			mw := middleware.Funcs{
+				OnAfterTool: func(context.Context, *middleware.State) error {
+					afterToolCount++
+					if afterToolCount == 2 {
+						return sentinel
+					}
+					return nil
+				},
+			}
+			ag, err := New(model, tools, Options{Middleware: middleware.NewChain([]middleware.Middleware{mw})})
+			if err != nil {
+				t.Fatalf("new agent: %v", err)
+			}
+
+			_, runErr := ag.Run(context.Background(), ctx)
+			if runErr == nil || !errors.Is(runErr, sentinel) {
+				t.Fatalf("expected middleware error, got %v", runErr)
+			}
+
+			if len(tools.calls) != 2 {
+				t.Fatalf("expected two tool calls, got %d", len(tools.calls))
+			}
+			if len(ctx.ToolResults) != 2 {
+				t.Fatalf("expected two tool results, got %d", len(ctx.ToolResults))
+			}
+			if ctx.ToolResults[0].Name != "first" || ctx.ToolResults[1].Name != "second" {
+				t.Fatalf("tool results in wrong order: %+v", ctx.ToolResults)
+			}
+		})
+	}
+}
+
 func TestAgent_Run_ToolExecutionError(t *testing.T) {
 	cases := []struct {
 		name    string
