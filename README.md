@@ -16,6 +16,10 @@ agentsdk-go is a modular agent development framework that implements Claude Code
 - Modules: 13 independent packages
 - External dependencies: anthropic-sdk-go, fsnotify, gopkg.in/yaml.v3, google/uuid, golang.org/x/mod, golang.org/x/net
 
+## Features
+
+- Four-layer example path: `examples/01-basic` (minimal request/response), `examples/02-cli` (interactive REPL), `examples/03-http` (REST + SSE server on :8080), `examples/04-advanced` (full pipeline with middleware, hooks, MCP, sandbox, skills, subagents)
+
 ## System Architecture
 
 ### Core Layer (6 modules)
@@ -82,7 +86,19 @@ go get github.com/cexll/agentsdk-go
 
 ## Quick Start
 
-### Basic Example
+### Basic Example (examples/01-basic)
+
+Run the minimal starter in `examples/01-basic`:
+
+```bash
+# 1. Set up environment
+cp .env.example .env
+# Edit .env: ANTHROPIC_API_KEY=sk-ant-your-key-here
+source .env
+
+# 2. Run the example
+go run ./examples/01-basic
+```
 
 ```go
 package main
@@ -184,7 +200,11 @@ for event := range events {
 
 ## Examples
 
-The repository includes 10 runnable examples: `cli`, `http`, `mcp`, `middleware`, `hooks`, `sandbox`, `skills`, `subagents`, `commands`, `plugins`.
+The repository includes four progressive examples aligned to the new four-layer path:
+- `01-basic` – minimal single request/response.
+- `02-cli` – interactive REPL with session history and optional config load.
+- `03-http` – REST + SSE server on `:8080`.
+- `04-advanced` – full pipeline exercising middleware, hooks, MCP, sandbox, skills, and subagents.
 
 ## Project Structure
 
@@ -212,16 +232,10 @@ agentsdk-go/
 │   └── security/               # Security utilities
 ├── cmd/cli/                    # CLI entrypoint
 ├── examples/                   # Example code
-│   ├── cli/                    # CLI example
-│   ├── http/                   # HTTP server example
-│   ├── mcp/                    # MCP client example
-│   ├── middleware/             # Middleware example
-│   ├── commands/               # Commands example
-│   ├── hooks/                  # Hooks example
-│   ├── sandbox/                # Sandbox example
-│   ├── skills/                 # Skills example
-│   ├── subagents/              # Subagents example
-│   └── plugins/                # Plugins example
+│   ├── 01-basic/               # Minimal single request/response
+│   ├── 02-cli/                 # CLI REPL with session history
+│   ├── 03-http/                # HTTP server (REST + SSE)
+│   └── 04-advanced/            # Full pipeline (middleware, hooks, MCP, sandbox, skills, subagents)
 ├── test/integration/           # Integration tests
 └── docs/                       # Documentation
 ```
@@ -265,15 +279,15 @@ The SDK provides an HTTP server implementation with SSE streaming.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-cd examples/http
+cd examples/03-http
 go run .
 ```
 
 The server listens on `:8080` by default and exposes these endpoints:
 
+- `GET /health` - Liveness probe
 - `POST /v1/run` - Synchronous execution returning the full result
 - `POST /v1/run/stream` - SSE streaming with real-time progress
-- `POST /v1/tools/execute` - Execute a tool call directly
 
 ### Streaming API Example
 
@@ -493,7 +507,7 @@ customMiddleware := middleware.Middleware{
 - [Getting Started](docs/getting-started.md) - Step-by-step tutorial
 - [API Reference](docs/api-reference.md) - API documentation
 - [Security](docs/security.md) - Security configuration guide
-- [HTTP API Guide](examples/http/README.md) - HTTP server instructions
+- [HTTP API Guide](examples/03-http/README.md) - HTTP server instructions
 - [Development Plan](.claude/specs/claude-code-rewrite/dev-plan.md) - Architecture plan
 - [Completion Report](.claude/specs/claude-code-rewrite/COMPLETION_REPORT.md) - Implementation report
 

@@ -265,15 +265,15 @@ SDK 提供 HTTP 服务器实现，支持 SSE 流式推送。
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-cd examples/http
+cd examples/03-http
 go run .
 ```
 
 服务器默认监听 `:8080`，提供以下端点：
 
+- `GET /health` - 健康检查
 - `POST /v1/run` - 同步执行，返回完整结果
 - `POST /v1/run/stream` - SSE 流式输出，实时返回进度
-- `POST /v1/tools/execute` - 直接执行工具调用
 
 ### 流式 API 示例
 
@@ -493,7 +493,7 @@ customMiddleware := middleware.Middleware{
 - [入门指南](docs/getting-started.md) - 分步教程
 - [API 参考](docs/api-reference.md) - API 文档
 - [安全实践](docs/security.md) - 安全配置指南
-- [HTTP API 指南](examples/http/README.md) - HTTP 服务器使用说明
+- [HTTP API 指南](examples/03-http/README.md) - HTTP 服务器使用说明
 - [开发计划](.claude/specs/claude-code-rewrite/dev-plan.md) - 架构设计计划
 - [完成报告](.claude/specs/claude-code-rewrite/COMPLETION_REPORT.md) - 实现报告
 

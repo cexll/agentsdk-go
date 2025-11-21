@@ -71,7 +71,7 @@ HTTP trace 写到 `.claude-trace/log-YYYY-MM-DD-HH-MM-SS.jsonl`，每行一个�
 > 提示：示例 body_raw 仅展示前几帧 SSE 文本，实际文件保留完整 event stream。
 
 ### 2.3 使用方法
-在自定义 HTTP server（或 `examples/http`）中包裹最外层 mux：
+在自定义 HTTP server 中包裹最外层 mux：
 ```go
 httpTraceDir := filepath.Join(projectRoot, ".claude-trace")
 writer, err := middleware.NewFileHTTPTraceWriter(httpTraceDir)

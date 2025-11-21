@@ -102,34 +102,31 @@ golangci-lint run
 **IMPORTANT**: All examples require `ANTHROPIC_API_KEY` environment variable to be set.
 
 ```bash
-# Set API key first (required for all examples)
+# Recommended: Use .env file
+cp .env.example .env
+# Edit .env and set ANTHROPIC_API_KEY=sk-ant-your-key-here
+source .env
+
+# Run examples
+go run ./examples/01-basic
+go run ./examples/02-cli --session-id demo
+go run ./examples/03-http
+go run ./examples/04-advanced --prompt "安全巡检" --enable-mcp=false
+```
+
+Alternative (direct export):
+```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-
-# CLI example (auto-resolves project root)
-cd examples/cli
-go run .
-
-# HTTP server example
-cd examples/http
-go run .
-# Server listens on :8080
-
-# MCP client example
-cd examples/mcp
-go run .
-
-# Middleware example (demonstrates all 6 interception points)
-cd examples/middleware
-go run .
+go run ./examples/01-basic
 ```
 
 ### HTTP API Endpoints
 
 When running the HTTP example:
 
+- `GET /health` - Basic liveness probe
 - `POST /v1/run` - Blocking request, waits for full response
 - `POST /v1/run/stream` - SSE streaming with real-time progress
-- `POST /v1/tools/execute` - Direct tool execution
 
 Example streaming request:
 ```bash
@@ -340,14 +337,13 @@ var ErrNilModel = errors.New("agent: model is nil")
 
 ## HTTP API Notes
 
-The HTTP example (`examples/http/`) demonstrates:
+The HTTP example (`examples/03-http/`) demonstrates:
 - **SSE Streaming**: Full Anthropic-compatible event stream
 - **Character-by-character output**: Real-time text streaming via `content_block_delta` events
-- **Tool execution visibility**: `tool_execution_start/stop` events
 - **Heartbeat**: 15s ping events to prevent connection drops
-- **Sandbox per-request**: Override filesystem/network policies in request body
+- **Minimal surface**: Only `/health`, `/v1/run`, `/v1/run/stream` with a single shared runtime
 
-Configuration via environment variables (see `examples/http/README.md`).
+Configuration via environment variables (see `examples/03-http/README.md`).
 
 ## MCP Integration
 
@@ -467,7 +463,7 @@ Key documentation files:
 - `docs/getting-started.md` - Step-by-step tutorial
 - `docs/api-reference.md` - API documentation
 - `docs/security.md` - Security best practices
-- `examples/http/README.md` - HTTP API guide
+- `examples/03-http/README.md` - HTTP API guide
 - `.claude/specs/claude-code-rewrite/` - Development plans and reports
 
 ## Project Principles
@@ -490,7 +486,7 @@ This codebase follows Linus Torvalds' philosophy:
 - Security validator: `pkg/security/validator.go`
 - Sandbox manager: `pkg/sandbox/`
 - CLI tool: `cmd/cli/main.go`
-- HTTP server example: `examples/http/main.go`
+- HTTP server example: `examples/03-http/main.go`
 
 When adding new features, maintain the modular structure and keep test coverage ≥90%.
 

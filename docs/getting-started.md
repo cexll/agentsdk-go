@@ -477,27 +477,26 @@ func min(a, b int) int {
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-cd examples/cli
-go run .
+cd examples/02-cli
+go run . --session-id demo --settings-path .claude/settings.json
 ```
 
 支持的参数：
 
-- `--model` - 指定模型名称
-- `--session` - 指定会话 ID
-- `--stream` - 启用流式输出
+- `--session-id` - 指定会话 ID（默认 `SESSION_ID` 环境变量或 `demo-session`）
+- `--settings-path` - 指定 `.claude/settings.json`，启用沙箱/工具配置
 
 ### HTTP 服务器示例
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-cd examples/http
+cd examples/03-http
 go run .
 ```
 
 启动后访问：
 
-- 健康检查：`http://localhost:8080/healthz`
+- 健康检查：`http://localhost:8080/health`
 - 同步执行：`POST /v1/run`
 - 流式输出：`POST /v1/run/stream`
 

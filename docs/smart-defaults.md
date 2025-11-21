@@ -189,7 +189,7 @@ rt, err := api.New(ctx, api.Options{
 - `pkg/security/sandbox.go` - 暴露配置方法
 - `pkg/tool/builtin/bash.go` - 添加配置接口
 - `pkg/api/agent.go` - CLI 模式自动配置
-- `examples/cli/basic.go` - 简化示例代码
+- `examples/02-cli/main.go` - 简化示例代码
 
 ## 向后兼容性
 

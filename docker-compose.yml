@@ -13,13 +13,10 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - AGENTSDK_HTTP_ADDR=${AGENTSDK_HTTP_ADDR:-0.0.0.0:8080}
       - AGENTSDK_MODEL=${AGENTSDK_MODEL:-claude-3-5-sonnet-20241022}
-      - AGENTSDK_DEFAULT_TIMEOUT=${AGENTSDK_DEFAULT_TIMEOUT:-}
-      - AGENTSDK_MAX_SESSIONS=${AGENTSDK_MAX_SESSIONS:-}
-      - PORT=8080
     volumes:
       - agentsdk_sessions:/var/agentsdk/sessions
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
       interval: 10s
       timeout: 3s
       retries: 3
