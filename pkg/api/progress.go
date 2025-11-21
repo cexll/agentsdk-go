@@ -14,14 +14,18 @@ type progressEmitter struct {
 	ch chan<- StreamEvent
 }
 
-func (e progressEmitter) emit(evt StreamEvent) {
+func (e progressEmitter) emit(ctx context.Context, evt StreamEvent) {
 	if e.ch == nil {
 		return
 	}
-	// 非阻塞发送避免前端消费慢时阻塞整个 agent 流程
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// 阻塞发送保证事件不会静默丢失；在 context 取消时优雅返回。
 	select {
+	case <-ctx.Done():
+		return
 	case e.ch <- evt:
-	default:
 	}
 }
 
@@ -31,45 +35,50 @@ func (e progressEmitter) emit(evt StreamEvent) {
 func newProgressMiddleware(events chan<- StreamEvent) middleware.Funcs {
 	em := progressEmitter{ch: events}
 
-	textBlock := func(idx int, content string) {
+	textBlock := func(ctx context.Context, idx int, content string) {
 		if content == "" {
 			return
 		}
-		em.emit(StreamEvent{Type: EventContentBlockStart, Index: &idx, ContentBlock: &ContentBlock{Type: "text"}})
+		em.emit(ctx, StreamEvent{Type: EventContentBlockStart, Index: &idx, ContentBlock: &ContentBlock{Type: "text"}})
 		for _, r := range content {
-			em.emit(StreamEvent{Type: EventContentBlockDelta, Index: &idx, Delta: &Delta{Type: "text_delta", Text: string(r)}})
+			em.emit(ctx, StreamEvent{Type: EventContentBlockDelta, Index: &idx, Delta: &Delta{Type: "text_delta", Text: string(r)}})
 		}
-		em.emit(StreamEvent{Type: EventContentBlockStop, Index: &idx})
+		em.emit(ctx, StreamEvent{Type: EventContentBlockStop, Index: &idx})
 	}
 
-	toolBlock := func(idx int, call agent.ToolCall) {
-		em.emit(StreamEvent{Type: EventContentBlockStart, Index: &idx, ContentBlock: &ContentBlock{Type: "tool_use", ID: call.ID, Name: call.Name}})
+	toolBlock := func(ctx context.Context, idx int, call agent.ToolCall) {
+		em.emit(ctx, StreamEvent{Type: EventContentBlockStart, Index: &idx, ContentBlock: &ContentBlock{Type: "tool_use", ID: call.ID, Name: call.Name}})
 		raw, err := json.Marshal(call.Input)
 		if err != nil {
 			raw = []byte("{}")
 		}
 		for _, chunk := range chunkString(string(raw), 10) {
-			em.emit(StreamEvent{Type: EventContentBlockDelta, Index: &idx, Delta: &Delta{Type: "input_json_delta", PartialJSON: json.RawMessage(chunk)}})
+			// partial_json must remain valid JSON; wrap the fragment as a JSON string
+			encoded, err := json.Marshal(chunk)
+			if err != nil {
+				encoded = []byte(`""`)
+			}
+			em.emit(ctx, StreamEvent{Type: EventContentBlockDelta, Index: &idx, Delta: &Delta{Type: "input_json_delta", PartialJSON: json.RawMessage(encoded)}})
 		}
-		em.emit(StreamEvent{Type: EventContentBlockStop, Index: &idx})
+		em.emit(ctx, StreamEvent{Type: EventContentBlockStop, Index: &idx})
 	}
 
 	return middleware.Funcs{
 		Identifier: "progress",
 
 		OnBeforeAgent: func(context.Context, *middleware.State) error {
-			em.emit(StreamEvent{Type: EventAgentStart})
+			em.emit(context.Background(), StreamEvent{Type: EventAgentStart})
 			return nil
 		},
 
-		OnBeforeModel: func(_ context.Context, st *middleware.State) error {
+		OnBeforeModel: func(ctx context.Context, st *middleware.State) error {
 			iter := st.Iteration
-			em.emit(StreamEvent{Type: EventIterationStart, Iteration: &iter})
-			em.emit(StreamEvent{Type: EventMessageStart, Message: &Message{Role: "assistant"}})
+			em.emit(ctx, StreamEvent{Type: EventIterationStart, Iteration: &iter})
+			em.emit(ctx, StreamEvent{Type: EventMessageStart, Message: &Message{Role: "assistant"}})
 			return nil
 		},
 
-		OnAfterModel: func(_ context.Context, st *middleware.State) error {
+		OnAfterModel: func(ctx context.Context, st *middleware.State) error {
 			out, ok := st.ModelOutput.(*agent.ModelOutput)
 			if !ok || out == nil {
 				return nil
@@ -77,13 +86,13 @@ func newProgressMiddleware(events chan<- StreamEvent) middleware.Funcs {
 
 			idx := 0
 			text := out.Content
-			textBlock(idx, text)
+			textBlock(ctx, idx, text)
 			if text != "" {
 				idx++
 			}
 
 			for _, call := range out.ToolCalls {
-				toolBlock(idx, call)
+				toolBlock(ctx, idx, call)
 				idx++
 			}
 
@@ -91,22 +100,22 @@ func newProgressMiddleware(events chan<- StreamEvent) middleware.Funcs {
 			if len(out.ToolCalls) > 0 {
 				reason = "tool_use"
 			}
-			em.emit(StreamEvent{Type: EventMessageDelta, Delta: &Delta{StopReason: reason}, Usage: &Usage{}})
-			em.emit(StreamEvent{Type: EventMessageStop})
+			em.emit(ctx, StreamEvent{Type: EventMessageDelta, Delta: &Delta{StopReason: reason}, Usage: &Usage{}})
+			em.emit(ctx, StreamEvent{Type: EventMessageStop})
 			return nil
 		},
 
-		OnBeforeTool: func(_ context.Context, st *middleware.State) error {
+		OnBeforeTool: func(ctx context.Context, st *middleware.State) error {
 			call, ok := st.ToolCall.(agent.ToolCall)
 			if !ok {
 				return nil
 			}
 			iter := st.Iteration
-			em.emit(StreamEvent{Type: EventToolExecutionStart, ToolUseID: call.ID, Name: call.Name, Iteration: &iter})
+			em.emit(ctx, StreamEvent{Type: EventToolExecutionStart, ToolUseID: call.ID, Name: call.Name, Iteration: &iter})
 			return nil
 		},
 
-		OnAfterTool: func(_ context.Context, st *middleware.State) error {
+		OnAfterTool: func(ctx context.Context, st *middleware.State) error {
 			call, ok := st.ToolCall.(agent.ToolCall)
 			if !ok {
 				return nil
@@ -117,7 +126,7 @@ func newProgressMiddleware(events chan<- StreamEvent) middleware.Funcs {
 			}
 
 			if res.Output != "" {
-				em.emit(StreamEvent{Type: EventToolExecutionOutput, ToolUseID: call.ID, Name: call.Name, Output: res.Output})
+				em.emit(ctx, StreamEvent{Type: EventToolExecutionOutput, ToolUseID: call.ID, Name: call.Name, Output: res.Output})
 			}
 
 			payload := map[string]any{}
@@ -127,14 +136,14 @@ func newProgressMiddleware(events chan<- StreamEvent) middleware.Funcs {
 			if len(res.Metadata) > 0 {
 				payload["metadata"] = res.Metadata
 			}
-			em.emit(StreamEvent{Type: EventToolExecutionResult, ToolUseID: call.ID, Name: call.Name, Output: payload})
+			em.emit(ctx, StreamEvent{Type: EventToolExecutionResult, ToolUseID: call.ID, Name: call.Name, Output: payload})
 			return nil
 		},
 
-		OnAfterAgent: func(_ context.Context, st *middleware.State) error {
+		OnAfterAgent: func(ctx context.Context, st *middleware.State) error {
 			iter := st.Iteration
-			em.emit(StreamEvent{Type: EventIterationStop, Iteration: &iter})
-			em.emit(StreamEvent{Type: EventAgentStop})
+			em.emit(ctx, StreamEvent{Type: EventIterationStop, Iteration: &iter})
+			em.emit(ctx, StreamEvent{Type: EventAgentStop})
 			return nil
 		},
 	}

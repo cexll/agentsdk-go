@@ -23,6 +23,7 @@ import (
 	"github.com/cexll/agentsdk-go/pkg/runtime/skills"
 	"github.com/cexll/agentsdk-go/pkg/runtime/subagents"
 	"github.com/cexll/agentsdk-go/pkg/sandbox"
+	"github.com/cexll/agentsdk-go/pkg/security"
 	"github.com/cexll/agentsdk-go/pkg/tool"
 	toolbuiltin "github.com/cexll/agentsdk-go/pkg/tool/builtin"
 )
@@ -87,7 +88,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	taskTool, err := registerTools(registry, opts, skReg, cmdExec)
+	taskTool, err := registerTools(registry, opts, settings, skReg, cmdExec)
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +324,11 @@ func (rt *Runtime) runAgentWithMiddleware(prep preparedRun, extras ...middleware
 		return runResult{}, err
 	}
 
-	out, err := ag.Run(prep.ctx, agent.NewContext())
+	agentCtx := agent.NewContext()
+	if sessionID := strings.TrimSpace(prep.normalized.SessionID); sessionID != "" {
+		agentCtx.Values["session_id"] = sessionID
+	}
+	out, err := ag.Run(prep.ctx, agentCtx)
 	if err != nil {
 		return runResult{}, err
 	}
@@ -753,12 +758,15 @@ func (t *runtimeToolExecutor) Execute(ctx context.Context, call agent.ToolCall, 
 	result, err := t.executor.Execute(ctx, callSpec)
 	toolResult := agent.ToolResult{Name: call.Name}
 	meta := map[string]any{}
+	content := ""
 	if result != nil && result.Result != nil {
 		toolResult.Output = result.Result.Output
 		meta["data"] = result.Result.Data
+		content = result.Result.Output
 	}
 	if err != nil {
 		meta["error"] = err.Error()
+		content = fmt.Sprintf(`{"error":%q}`, err.Error())
 	}
 	if len(meta) > 0 {
 		toolResult.Metadata = meta
@@ -769,10 +777,10 @@ func (t *runtimeToolExecutor) Execute(ctx context.Context, call agent.ToolCall, 
 		return toolResult, hookErr
 	}
 
-	if t.history != nil && result != nil && result.Result != nil {
+	if t.history != nil {
 		t.history.Append(message.Message{
 			Role:    "tool",
-			Content: result.Result.Output,
+			Content: content,
 			ToolCalls: []message.ToolCall{{
 				ID:        call.ID,
 				Name:      call.Name,
@@ -799,12 +807,38 @@ func coreToolResultPayload(call agent.ToolCall, res *tool.CallResult, err error)
 
 // ----------------- config + registries -----------------
 
-func registerTools(registry *tool.Registry, opts Options, skReg *skills.Registry, cmdExec *commands.Executor) (*toolbuiltin.TaskTool, error) {
+func registerTools(registry *tool.Registry, opts Options, settings *config.Settings, skReg *skills.Registry, cmdExec *commands.Executor) (*toolbuiltin.TaskTool, error) {
 	tools := opts.Tools
 	var taskTool *toolbuiltin.TaskTool
 	entry := effectiveEntryPoint(opts)
 	if len(tools) == 0 {
-		bashTool := toolbuiltin.NewBashToolWithRoot(opts.ProjectRoot)
+		sandboxDisabled := settings != nil && settings.Sandbox != nil && settings.Sandbox.Enabled != nil && !*settings.Sandbox.Enabled
+		var (
+			bashTool  *toolbuiltin.BashTool
+			readTool  *toolbuiltin.ReadTool
+			writeTool *toolbuiltin.WriteTool
+			editTool  *toolbuiltin.EditTool
+			grepTool  *toolbuiltin.GrepTool
+			globTool  *toolbuiltin.GlobTool
+		)
+
+		if sandboxDisabled {
+			disabledSandbox := security.NewDisabledSandbox()
+			bashTool = toolbuiltin.NewBashToolWithSandbox(opts.ProjectRoot, disabledSandbox)
+			readTool = toolbuiltin.NewReadToolWithSandbox(opts.ProjectRoot, disabledSandbox)
+			writeTool = toolbuiltin.NewWriteToolWithSandbox(opts.ProjectRoot, disabledSandbox)
+			editTool = toolbuiltin.NewEditToolWithSandbox(opts.ProjectRoot, disabledSandbox)
+			grepTool = toolbuiltin.NewGrepToolWithSandbox(opts.ProjectRoot, disabledSandbox)
+			globTool = toolbuiltin.NewGlobToolWithSandbox(opts.ProjectRoot, disabledSandbox)
+		} else {
+			bashTool = toolbuiltin.NewBashToolWithRoot(opts.ProjectRoot)
+			readTool = toolbuiltin.NewReadToolWithRoot(opts.ProjectRoot)
+			writeTool = toolbuiltin.NewWriteToolWithRoot(opts.ProjectRoot)
+			editTool = toolbuiltin.NewEditToolWithRoot(opts.ProjectRoot)
+			grepTool = toolbuiltin.NewGrepToolWithRoot(opts.ProjectRoot)
+			globTool = toolbuiltin.NewGlobToolWithRoot(opts.ProjectRoot)
+		}
+
 		// CLI 模式下允许管道等 shell 元字符
 		if entry == EntryPointCLI {
 			bashTool.AllowShellMetachars(true)
@@ -817,17 +851,17 @@ func registerTools(registry *tool.Registry, opts Options, skReg *skills.Registry
 		}
 		tools = []tool.Tool{
 			bashTool,
-			toolbuiltin.NewReadToolWithRoot(opts.ProjectRoot),
-			toolbuiltin.NewWriteToolWithRoot(opts.ProjectRoot),
-			toolbuiltin.NewEditToolWithRoot(opts.ProjectRoot),
+			readTool,
+			writeTool,
+			editTool,
 			toolbuiltin.NewWebFetchTool(nil),
 			toolbuiltin.NewWebSearchTool(nil),
 			toolbuiltin.NewBashOutputTool(nil),
 			toolbuiltin.NewTodoWriteTool(),
 			toolbuiltin.NewSkillTool(skReg, nil),
 			toolbuiltin.NewSlashCommandTool(cmdExec),
-			toolbuiltin.NewGrepToolWithRoot(opts.ProjectRoot),
-			toolbuiltin.NewGlobToolWithRoot(opts.ProjectRoot),
+			grepTool,
+			globTool,
 		}
 		if shouldRegisterTaskTool(entry) {
 			taskTool = toolbuiltin.NewTaskTool()

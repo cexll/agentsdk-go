@@ -9,9 +9,19 @@ import (
 )
 
 // buildSandboxManager wires filesystem/network/resource policies using options
-// and settings.json. It keeps sandboxing enabled by default to preserve
-// backwards compatibility; settings may extend the allowlist.
+// and settings.json. Respects settings.Sandbox.Enabled to allow disabling
+// sandbox validation entirely. Defaults to enabled for backwards compatibility.
 func buildSandboxManager(opts Options, settings *config.Settings) (*sandbox.Manager, string) {
+	// Check if sandbox is explicitly disabled in settings
+	if settings != nil && settings.Sandbox != nil && settings.Sandbox.Enabled != nil && !*settings.Sandbox.Enabled {
+		// Return a pass-through sandbox manager that skips all validation
+		root := opts.Sandbox.Root
+		if root == "" {
+			root = opts.ProjectRoot
+		}
+		return sandbox.NewManager(nil, nil, nil), filepath.Clean(root)
+	}
+
 	root := opts.Sandbox.Root
 	if root == "" {
 		root = opts.ProjectRoot

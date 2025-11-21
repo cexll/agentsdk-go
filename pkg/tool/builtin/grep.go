@@ -78,6 +78,18 @@ func NewGrepToolWithRoot(root string) *GrepTool {
 	}
 }
 
+// NewGrepToolWithSandbox builds a GrepTool using a custom sandbox.
+func NewGrepToolWithSandbox(root string, sandbox *security.Sandbox) *GrepTool {
+	resolved := resolveRoot(root)
+	return &GrepTool{
+		sandbox:    sandbox,
+		root:       resolved,
+		maxResults: grepResultLimit,
+		maxDepth:   grepMaxDepth,
+		maxContext: grepMaxContext,
+	}
+}
+
 func (g *GrepTool) Name() string { return "Grep" }
 
 func (g *GrepTool) Description() string { return grepToolDesc }

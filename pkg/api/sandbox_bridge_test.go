@@ -43,3 +43,40 @@ func TestAdditionalSandboxPathsSkipsInvalidEntries(t *testing.T) {
 		t.Fatalf("expected relative path to be resolved absolute, got %+v", extras)
 	}
 }
+
+func TestBuildSandboxManagerRespectsDisabledSetting(t *testing.T) {
+	root := t.TempDir()
+	disabled := false
+	settings := &config.Settings{
+		Sandbox: &config.SandboxConfig{
+			Enabled: &disabled,
+		},
+	}
+	opts := Options{ProjectRoot: root}
+	mgr, sbRoot := buildSandboxManager(opts, settings)
+
+	if sbRoot == "" {
+		t.Fatal("expected non-empty sandbox root")
+	}
+
+	// When sandbox is disabled, Manager should pass through (nil policies)
+	// CheckPath/CheckNetwork should return nil for any input
+	if err := mgr.CheckPath("/nonexistent/path/outside/sandbox"); err != nil {
+		t.Fatalf("disabled sandbox should allow any path, got error: %v", err)
+	}
+	if err := mgr.CheckNetwork("any-domain.example"); err != nil {
+		t.Fatalf("disabled sandbox should allow any network, got error: %v", err)
+	}
+}
+
+func TestBuildSandboxManagerEnabledByDefault(t *testing.T) {
+	root := t.TempDir()
+	// No Sandbox config, should default to enabled
+	opts := Options{ProjectRoot: root}
+	mgr, _ := buildSandboxManager(opts, nil)
+
+	// Should enforce path restrictions
+	if err := mgr.CheckPath("/nonexistent/path/outside/sandbox"); err == nil {
+		t.Fatal("expected path check to fail when sandbox enabled by default")
+	}
+}

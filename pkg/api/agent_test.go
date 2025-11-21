@@ -2,12 +2,15 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/cexll/agentsdk-go/pkg/agent"
+	"github.com/cexll/agentsdk-go/pkg/message"
 	"github.com/cexll/agentsdk-go/pkg/model"
 	"github.com/cexll/agentsdk-go/pkg/runtime/commands"
 	"github.com/cexll/agentsdk-go/pkg/runtime/skills"
@@ -98,6 +101,59 @@ func TestRuntimeToolFlow(t *testing.T) {
 	}
 	if toolImpl.calls == 0 {
 		t.Fatal("expected tool execution")
+	}
+}
+
+func TestRuntimeToolExecutor_ErrorHistory(t *testing.T) {
+	cases := []struct {
+		name   string
+		errMsg string
+	}{
+		{name: "records error output", errMsg: "network unreachable"},
+		{name: "escapes quotes for json", errMsg: `input "invalid"`},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			reg := tool.NewRegistry()
+			fail := &failingTool{err: errors.New(tc.errMsg)}
+			if err := reg.Register(fail); err != nil {
+				t.Fatalf("register tool: %v", err)
+			}
+			exec := tool.NewExecutor(reg, nil)
+			history := message.NewHistory()
+			rtExec := &runtimeToolExecutor{
+				executor: exec,
+				hooks:    &runtimeHookAdapter{},
+				history:  history,
+				host:     "localhost",
+			}
+
+			call := agent.ToolCall{ID: "c1", Name: fail.Name(), Input: map[string]any{"k": "v"}}
+			res, err := rtExec.Execute(context.Background(), call, agent.NewContext())
+			if err == nil {
+				t.Fatal("expected tool execution error")
+			}
+			if res.Metadata == nil || res.Metadata["error"] != fail.err.Error() {
+				t.Fatalf("expected error metadata, got %+v", res.Metadata)
+			}
+
+			msgs := history.All()
+			if len(msgs) != 1 {
+				t.Fatalf("expected history entry, got %d", len(msgs))
+			}
+			var payload map[string]string
+			if unmarshalErr := json.Unmarshal([]byte(msgs[0].Content), &payload); unmarshalErr != nil {
+				t.Fatalf("history content not valid json: %v", unmarshalErr)
+			}
+			if payload["error"] != fail.err.Error() {
+				t.Fatalf("expected error field, got %+v", payload)
+			}
+			if msgs[0].Role != "tool" || len(msgs[0].ToolCalls) != 1 || msgs[0].ToolCalls[0].Name != call.Name {
+				t.Fatalf("tool history entry malformed: %+v", msgs[0])
+			}
+		})
 	}
 }
 
@@ -197,4 +253,15 @@ func (e *echoTool) Execute(ctx context.Context, params map[string]interface{}) (
 	e.calls++
 	text := params["text"]
 	return &tool.ToolResult{Output: fmt.Sprint(text)}, nil
+}
+
+type failingTool struct {
+	err error
+}
+
+func (f *failingTool) Name() string             { return "fail" }
+func (f *failingTool) Description() string      { return "always fails" }
+func (f *failingTool) Schema() *tool.JSONSchema { return &tool.JSONSchema{Type: "object"} }
+func (f *failingTool) Execute(context.Context, map[string]interface{}) (*tool.ToolResult, error) {
+	return nil, f.err
 }

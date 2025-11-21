@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/cexll/agentsdk-go/pkg/security"
 	"github.com/cexll/agentsdk-go/pkg/tool"
 )
 
@@ -45,6 +46,11 @@ func NewWriteTool() *WriteTool {
 // NewWriteToolWithRoot builds a WriteTool rooted at the provided directory.
 func NewWriteToolWithRoot(root string) *WriteTool {
 	return &WriteTool{base: newFileSandbox(root)}
+}
+
+// NewWriteToolWithSandbox builds a WriteTool using a custom sandbox.
+func NewWriteToolWithSandbox(root string, sandbox *security.Sandbox) *WriteTool {
+	return &WriteTool{base: newFileSandboxWithSandbox(root, sandbox)}
 }
 
 func (w *WriteTool) Name() string { return "Write" }

@@ -216,6 +216,17 @@ func NewBashToolWithRoot(root string) *BashTool {
 	}
 }
 
+// NewBashToolWithSandbox builds a BashTool with a custom sandbox.
+// Used when sandbox needs to be pre-configured (e.g., disabled mode).
+func NewBashToolWithSandbox(root string, sandbox *security.Sandbox) *BashTool {
+	resolved := resolveRoot(root)
+	return &BashTool{
+		sandbox: sandbox,
+		root:    resolved,
+		timeout: defaultBashTimeout,
+	}
+}
+
 // AllowShellMetachars enables shell pipes and metacharacters (CLI mode).
 func (b *BashTool) AllowShellMetachars(allow bool) {
 	if b != nil && b.sandbox != nil {

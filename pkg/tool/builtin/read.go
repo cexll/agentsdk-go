@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cexll/agentsdk-go/pkg/security"
 	"github.com/cexll/agentsdk-go/pkg/tool"
 )
 
@@ -68,6 +69,15 @@ func NewReadTool() *ReadTool {
 func NewReadToolWithRoot(root string) *ReadTool {
 	return &ReadTool{
 		base:          newFileSandbox(root),
+		defaultLimit:  readDefaultLineLimit,
+		maxLineLength: readMaxLineLength,
+	}
+}
+
+// NewReadToolWithSandbox builds a ReadTool using a custom sandbox.
+func NewReadToolWithSandbox(root string, sandbox *security.Sandbox) *ReadTool {
+	return &ReadTool{
+		base:          newFileSandboxWithSandbox(root, sandbox),
 		defaultLimit:  readDefaultLineLimit,
 		maxLineLength: readMaxLineLength,
 	}

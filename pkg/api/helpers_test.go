@@ -195,7 +195,7 @@ func TestProjectConfigFromSettings(t *testing.T) {
 func TestRegisterToolsUsesDefaultImplementations(t *testing.T) {
 	registry := tool.NewRegistry()
 	opts := Options{ProjectRoot: t.TempDir()}
-	if taskTool, err := registerTools(registry, opts, nil, nil); err != nil {
+	if taskTool, err := registerTools(registry, opts, nil, nil, nil); err != nil {
 		t.Fatalf("register tools: %v", err)
 		_ = taskTool
 	} else if taskTool == nil {
@@ -223,7 +223,7 @@ func TestRegisterToolsUsesDefaultImplementations(t *testing.T) {
 func TestRegisterToolsSkipsNilEntries(t *testing.T) {
 	registry := tool.NewRegistry()
 	opts := Options{ProjectRoot: t.TempDir(), Tools: []tool.Tool{nil, &echoTool{}}}
-	if taskTool, err := registerTools(registry, opts, nil, nil); err != nil {
+	if taskTool, err := registerTools(registry, opts, nil, nil, nil); err != nil {
 		t.Fatalf("register tools: %v", err)
 		_ = taskTool
 	} else if taskTool != nil {

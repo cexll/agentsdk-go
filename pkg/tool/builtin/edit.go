@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/cexll/agentsdk-go/pkg/security"
 	"github.com/cexll/agentsdk-go/pkg/tool"
 )
 
@@ -57,6 +58,11 @@ func NewEditTool() *EditTool {
 // NewEditToolWithRoot builds an EditTool rooted at the provided directory.
 func NewEditToolWithRoot(root string) *EditTool {
 	return &EditTool{base: newFileSandbox(root)}
+}
+
+// NewEditToolWithSandbox builds an EditTool using a custom sandbox.
+func NewEditToolWithSandbox(root string, sandbox *security.Sandbox) *EditTool {
+	return &EditTool{base: newFileSandboxWithSandbox(root, sandbox)}
 }
 
 func (e *EditTool) Name() string { return "Edit" }

@@ -21,9 +21,13 @@ type fileSandbox struct {
 
 func newFileSandbox(root string) *fileSandbox {
 	resolved := resolveRoot(root)
+	return newFileSandboxWithSandbox(resolved, security.NewSandbox(resolved))
+}
+
+func newFileSandboxWithSandbox(root string, sandbox *security.Sandbox) *fileSandbox {
 	return &fileSandbox{
-		sandbox:  security.NewSandbox(resolved),
-		root:     resolved,
+		sandbox:  sandbox,
+		root:     resolveRoot(root),
 		maxBytes: defaultMaxFileBytes,
 	}
 }

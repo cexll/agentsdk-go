@@ -52,6 +52,16 @@ func NewGlobToolWithRoot(root string) *GlobTool {
 	}
 }
 
+// NewGlobToolWithSandbox builds a GlobTool using a custom sandbox.
+func NewGlobToolWithSandbox(root string, sandbox *security.Sandbox) *GlobTool {
+	resolved := resolveRoot(root)
+	return &GlobTool{
+		sandbox:    sandbox,
+		root:       resolved,
+		maxResults: globResultLimit,
+	}
+}
+
 func (g *GlobTool) Name() string { return "Glob" }
 
 func (g *GlobTool) Description() string { return globToolDesc }
