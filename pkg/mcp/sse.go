@@ -21,6 +21,8 @@ type SSEOptions struct {
 	EventsURL            string
 	RPCURL               string
 	Client               *http.Client
+	Headers              map[string]string
+	AuthToken            string
 	HeartbeatInterval    time.Duration
 	HeartbeatTimeout     time.Duration
 	ReconnectInterval    time.Duration
@@ -49,8 +51,10 @@ type SSETransport struct {
 	reconInitial time.Duration
 	reconMax     time.Duration
 
-	connMu sync.Mutex
-	conn   io.Closer
+	connMu  sync.Mutex
+	conn    io.Closer
+	headers map[string]string
+	auth    string
 
 	failOnce sync.Once
 	failErr  error
@@ -106,6 +110,8 @@ func NewSSETransport(ctx context.Context, opts SSEOptions) (*SSETransport, error
 		hbTimeout:    hbTimeout,
 		reconInitial: reconInitial,
 		reconMax:     reconMax,
+		headers:      copyStringMap(opts.Headers),
+		auth:         strings.TrimSpace(opts.AuthToken),
 	}
 	transport.heartbeat.Store(time.Now().UnixNano())
 	transport.ctx, transport.cancel = context.WithCancel(ctx)
@@ -155,6 +161,9 @@ func (t *SSETransport) dispatch(ctx context.Context, req *Request) error {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.rpc, bytes.NewReader(buf.Bytes()))
 	if err != nil {
 		return fmt.Errorf("create rpc request: %w", err)
+	}
+	if err := t.applyHeaders(httpReq); err != nil {
+		return err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	resp, err := t.client.Do(httpReq)
@@ -212,6 +221,9 @@ func (t *SSETransport) consumeOnce() (bool, error) {
 	req, err := http.NewRequestWithContext(t.ctx, http.MethodGet, t.events, nil)
 	if err != nil {
 		return false, fmt.Errorf("build events request: %w", err)
+	}
+	if err := t.applyHeaders(req); err != nil {
+		return false, err
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	resp, err := t.client.Do(req)
@@ -376,4 +388,20 @@ func (t *SSETransport) signalReady() {
 	t.readyOnce.Do(func() {
 		close(t.ready)
 	})
+}
+
+func (t *SSETransport) applyHeaders(req *http.Request) error {
+	if req == nil {
+		return errors.New("nil request")
+	}
+	for k, v := range t.headers {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		req.Header.Set(k, v)
+	}
+	if t.auth != "" && req.Header.Get("Authorization") == "" {
+		req.Header.Set("Authorization", "Bearer "+t.auth)
+	}
+	return nil
 }

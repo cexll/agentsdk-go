@@ -42,9 +42,21 @@ func collectMCPServers(settings *config.Settings, plugins []*plugins.ClaudePlugi
 		add("", spec, spec)
 	}
 
-	if settings != nil {
-		for _, spec := range settings.MCPServers {
-			add("", spec, spec)
+	if settings != nil && settings.MCP != nil {
+		for name, cfg := range settings.MCP.Servers {
+			// Convert MCPServerConfig to spec string
+			spec := ""
+			switch cfg.Type {
+			case "http", "sse":
+				spec = cfg.URL
+			case "stdio":
+				spec = fmt.Sprintf("stdio://%s %s", cfg.Command, strings.Join(cfg.Args, " "))
+			default:
+				if cfg.URL != "" {
+					spec = cfg.URL
+				}
+			}
+			add(name, spec, cfg.URL)
 		}
 	}
 

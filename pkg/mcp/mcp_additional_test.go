@@ -149,6 +149,16 @@ func TestRetryTransportMaxAttemptsReached(t *testing.T) {
 	}
 }
 
+func TestPendingTrackerDuplicateID(t *testing.T) {
+	p := newPendingTracker()
+	if _, err := p.add("dup"); err != nil {
+		t.Fatalf("first add failed: %v", err)
+	}
+	if _, err := p.add("dup"); err == nil {
+		t.Fatal("expected duplicate id error")
+	}
+}
+
 // TestSSEConsumeOnceRequestCreationError tests consumeOnce when request creation fails.
 func TestSSEConsumeOnceRequestCreationError(t *testing.T) {
 	tr := &SSETransport{

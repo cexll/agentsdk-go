@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -44,5 +45,22 @@ func TestPendingTrackerLifecycle(t *testing.T) {
 	p.failAll(context.Canceled)
 	if _, err := p.add("3"); err == nil {
 		t.Fatal("expected closed tracker error")
+	}
+}
+
+func TestErrorNilReceiver(t *testing.T) {
+	var err *Error
+	if got := err.Error(); got != "<nil>" {
+		t.Fatalf("unexpected string for nil receiver: %s", got)
+	}
+}
+
+func TestDefaultHTTPRetryableStatuses(t *testing.T) {
+	retryable := defaultHTTPRetryable(&httpStatusError{status: http.StatusTooManyRequests})
+	if !retryable {
+		t.Fatal("429 should be retryable")
+	}
+	if defaultHTTPRetryable(&httpStatusError{status: http.StatusBadRequest}) {
+		t.Fatal("400 should not be retryable")
 	}
 }

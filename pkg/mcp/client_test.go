@@ -219,6 +219,35 @@ func TestClientListToolsNoCache(t *testing.T) {
 	}
 }
 
+func TestWithPreflightHandlesNilClient(t *testing.T) {
+	opt := WithPreflight(func(context.Context, *Request) error { return nil })
+	opt(nil) // should be a no-op without panicking
+}
+
+func TestServerNameFallback(t *testing.T) {
+	if got := serverName(""); got != "<unnamed>" {
+		t.Fatalf("unexpected fallback: %s", got)
+	}
+	if got := serverName("named"); got != "named" {
+		t.Fatalf("unexpected name: %s", got)
+	}
+}
+
+func TestWithToolCacheTTLNegative(t *testing.T) {
+	payload := mustMarshal(t, ToolListResult{Tools: []ToolDescriptor{{Name: "fresh"}}})
+	st := &stubTransport{responses: []*Response{{ID: "1", Result: payload}, {ID: "2", Result: payload}}}
+	client := NewClient(st, WithToolCacheTTL(-1))
+	if _, err := client.ListTools(context.Background()); err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	if _, err := client.ListTools(context.Background()); err != nil {
+		t.Fatalf("list tools second: %v", err)
+	}
+	if len(st.calls) != 2 {
+		t.Fatalf("negative ttl should disable cache, calls=%d", len(st.calls))
+	}
+}
+
 func mustMarshal(t *testing.T, v any) []byte {
 	t.Helper()
 	data, err := json.Marshal(v)

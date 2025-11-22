@@ -36,7 +36,13 @@ func TestAllowedByManagedPoliciesPrefersDeny(t *testing.T) {
 }
 
 func TestCollectMCPServersMergesSourcesAndDedups(t *testing.T) {
-	settings := &config.Settings{MCPServers: []string{"http://settings.example"}}
+	settings := &config.Settings{
+		MCP: &config.MCPConfig{
+			Servers: map[string]config.MCPServerConfig{
+				"settings-server": {Type: "http", URL: "http://settings.example"},
+			},
+		},
+	}
 	plugin := &plugins.ClaudePlugin{
 		Name: "plug",
 		MCPConfig: &plugins.MCPConfig{
@@ -82,5 +88,41 @@ func TestDescribeRuleFormatsNicely(t *testing.T) {
 	onlyURL := config.MCPServerRule{URL: "http://only"}
 	if out := describeRule(onlyURL); out != "http://only" {
 		t.Fatalf("expected URL fallback, got %q", out)
+	}
+}
+
+func TestMatchesRuleIgnoresEmptyRule(t *testing.T) {
+	rules := []config.MCPServerRule{{}}
+	if matchesRule("svc", "http://example", rules) {
+		t.Fatal("blank rule should not match anything")
+	}
+	rules = []config.MCPServerRule{{URL: "HTTP://EXAMPLE"}}
+	if !matchesRule("svc", "http://example", rules) {
+		t.Fatal("expected case-insensitive URL match")
+	}
+}
+
+func TestStringSetTrimsAndDedups(t *testing.T) {
+	set := stringSet([]string{" one ", "ONE", "", "two"})
+	if len(set) != 3 || !set["one"] || !set["ONE"] || !set["two"] {
+		t.Fatalf("stringSet did not trim/preserve distinct values: %+v", set)
+	}
+}
+
+func TestSettingsMCPHelpersNilSafe(t *testing.T) {
+	if settingsEnabledMCP(nil) != nil || settingsDisabledMCP(nil) != nil || managedAllowRules(nil) != nil || managedDenyRules(nil) != nil {
+		t.Fatal("expected nil-safe helpers to return nil slices")
+	}
+	settings := &config.Settings{
+		EnabledMCPJSONServers:  []string{"a"},
+		DisabledMCPJSONServers: []string{"b"},
+		AllowedMcpServers:      []config.MCPServerRule{{ServerName: "svc"}},
+		DeniedMcpServers:       []config.MCPServerRule{{URL: "http://deny"}},
+	}
+	if len(settingsEnabledMCP(settings)) != 1 || len(settingsDisabledMCP(settings)) != 1 {
+		t.Fatalf("unexpected enabled/disabled slices: %+v %+v", settingsEnabledMCP(settings), settingsDisabledMCP(settings))
+	}
+	if len(managedAllowRules(settings)) != 1 || len(managedDenyRules(settings)) != 1 {
+		t.Fatalf("unexpected managed rules slices")
 	}
 }

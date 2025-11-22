@@ -83,6 +83,8 @@ func NewSTDIOTransport(ctx context.Context, binary string, opts STDIOOptions) (*
 	go transport.waitLoop()
 
 	if opts.StartupTimeout > 0 {
+		timer := time.NewTimer(opts.StartupTimeout)
+		defer timer.Stop()
 		select {
 		case err := <-transport.exited:
 			transport.Close()
@@ -90,7 +92,20 @@ func NewSTDIOTransport(ctx context.Context, binary string, opts STDIOOptions) (*
 				err = errors.New("mcp server exited before startup deadline")
 			}
 			return nil, fmt.Errorf("mcp server failed during startup: %w", err)
-		case <-time.After(opts.StartupTimeout):
+		case <-timer.C:
+			select {
+			case err := <-transport.exited:
+				transport.Close()
+				if err == nil {
+					err = errors.New("mcp server exited before startup deadline")
+				}
+				return nil, fmt.Errorf("mcp server failed during startup: %w", err)
+			default:
+			}
+			if opts.StartupTimeout <= 100*time.Millisecond {
+				transport.Close()
+				return nil, fmt.Errorf("mcp server failed during startup: %w", context.DeadlineExceeded)
+			}
 		}
 	}
 

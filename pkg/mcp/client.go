@@ -3,6 +3,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +17,30 @@ import (
 
 // preflightHook allows pluggable guards executed before each call.
 type preflightHook func(context.Context, *Request) error
+
+var (
+	stdioTransportFactory = func(ctx context.Context, binary string, opts STDIOOptions) (Transport, error) {
+		return NewSTDIOTransport(ctx, binary, opts)
+	}
+	httpTransportFactory = func(opts HTTPOptions) (Transport, error) {
+		return NewHTTPTransport(opts)
+	}
+	sseTransportFactory = func(ctx context.Context, opts SSEOptions) (Transport, error) {
+		return NewSSETransport(ctx, opts)
+	}
+)
+
+// ServerConfig describes a single MCP server entry used to build a client.
+type ServerConfig struct {
+	Type      string
+	Command   string
+	Args      []string
+	URL       string
+	Env       map[string]string
+	Headers   map[string]string
+	Timeout   time.Duration
+	AuthToken string
+}
 
 // Client exposes the MCP JSON-RPC surface independent of the transport.
 type Client struct {
@@ -44,6 +71,61 @@ func NewClient(transport Transport, opts ...ClientOption) *Client {
 		}
 	}
 	return client
+}
+
+// NewClientFromServerConfig builds a client using the provided server definition.
+func NewClientFromServerConfig(ctx context.Context, name string, cfg ServerConfig, opts ...ClientOption) (*Client, error) {
+	serverType := normalizeServerType(cfg.Type)
+	serverLabel := serverName(name)
+
+	switch serverType {
+	case "stdio":
+		if strings.TrimSpace(cfg.Command) == "" {
+			return nil, fmt.Errorf("mcp server %s: command is required for type stdio", serverLabel)
+		}
+		transport, err := stdioTransportFactory(ctx, cfg.Command, STDIOOptions{
+			Args: cfg.Args,
+			Env:  envSliceFromMap(cfg.Env),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return NewClient(transport, opts...), nil
+	case "http":
+		if strings.TrimSpace(cfg.URL) == "" {
+			return nil, fmt.Errorf("mcp server %s: url is required for type http", serverLabel)
+		}
+		transport, err := httpTransportFactory(HTTPOptions{
+			URL:       cfg.URL,
+			Headers:   copyStringMap(cfg.Headers),
+			AuthToken: cfg.AuthToken,
+			Timeout:   cfg.Timeout,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return NewClient(transport, opts...), nil
+	case "sse":
+		if strings.TrimSpace(cfg.URL) == "" {
+			return nil, fmt.Errorf("mcp server %s: url is required for type sse", serverLabel)
+		}
+		httpClient := &http.Client{Timeout: 0}
+		if cfg.Timeout > 0 {
+			httpClient.Timeout = cfg.Timeout
+		}
+		transport, err := sseTransportFactory(ctx, SSEOptions{
+			BaseURL:   cfg.URL,
+			Client:    httpClient,
+			Headers:   copyStringMap(cfg.Headers),
+			AuthToken: cfg.AuthToken,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return NewClient(transport, opts...), nil
+	default:
+		return nil, fmt.Errorf("mcp server %s: type %q is not supported", serverLabel, cfg.Type)
+	}
 }
 
 // WithRetryPolicy wraps the client's transport in a retrying decorator.
@@ -212,4 +294,35 @@ func copyToolDescriptors(in []ToolDescriptor) []ToolDescriptor {
 	out := make([]ToolDescriptor, len(in))
 	copy(out, in)
 	return out
+}
+
+func envSliceFromMap(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, fmt.Sprintf("%s=%s", k, env[k]))
+	}
+	return out
+}
+
+func normalizeServerType(t string) string {
+	typeLabel := strings.ToLower(strings.TrimSpace(t))
+	if typeLabel == "" {
+		typeLabel = "stdio"
+	}
+	return typeLabel
+}
+
+func serverName(label string) string {
+	if strings.TrimSpace(label) == "" {
+		return "<unnamed>"
+	}
+	return label
 }
