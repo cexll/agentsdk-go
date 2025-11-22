@@ -2,65 +2,95 @@ package mcp
 
 import (
 	"context"
-	"net/http"
+	"strings"
 	"testing"
-	"time"
 )
 
-func TestErrorString(t *testing.T) {
-	err := &Error{Code: 42, Message: "boom"}
-	if got := err.Error(); got != "mcp error 42: boom" {
-		t.Fatalf("unexpected string: %s", got)
+func TestNewSSETransportDeprecated(t *testing.T) {
+	_, err := NewSSETransport(context.Background(), SSEOptions{BaseURL: "http://example.com"})
+	if err == nil {
+		t.Fatal("expected error for deprecated function")
 	}
-	err.Data = []byte(`{"hint":"retry"}`)
-	if got := err.Error(); got != "mcp error 42: boom ({\"hint\":\"retry\"})" {
-		t.Fatalf("unexpected string with data: %s", got)
+	if !strings.Contains(err.Error(), "deprecated") {
+		t.Errorf("error should mention deprecated: %v", err)
 	}
 }
 
-func TestPendingTrackerLifecycle(t *testing.T) {
-	p := newPendingTracker()
-	ch, err := p.add("1")
+func TestNewSTDIOTransportDeprecated(t *testing.T) {
+	_, err := NewSTDIOTransport(context.Background(), "echo", STDIOOptions{Args: []string{"test"}})
+	if err == nil {
+		t.Fatal("expected error for deprecated function")
+	}
+	if !strings.Contains(err.Error(), "deprecated") {
+		t.Errorf("error should mention deprecated: %v", err)
+	}
+}
+
+func TestNewClientFromServerConfigStdio(t *testing.T) {
+	cfg := ServerConfig{
+		Type:    "stdio",
+		Command: "echo",
+		Args:    []string{"test"},
+	}
+	client, err := NewClientFromServerConfig(context.Background(), "test", cfg)
 	if err != nil {
-		t.Fatalf("add: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	go func() {
-		<-ctx.Done()
-		p.cancel("1")
-	}()
-	select {
-	case <-ch:
-	case <-time.After(time.Second):
-		t.Fatal("pending request not canceled")
-	}
-	if _, err := p.add("1"); err != nil {
-		t.Fatalf("tracker should accept reused ids: %v", err)
-	}
-	p.flush(context.DeadlineExceeded)
-	if _, err := p.add("2"); err != nil {
-		t.Fatalf("tracker should stay open after flush: %v", err)
-	}
-	p.failAll(context.Canceled)
-	if _, err := p.add("3"); err == nil {
-		t.Fatal("expected closed tracker error")
+	if client == nil {
+		t.Fatal("expected non-nil client")
 	}
 }
 
-func TestErrorNilReceiver(t *testing.T) {
-	var err *Error
-	if got := err.Error(); got != "<nil>" {
-		t.Fatalf("unexpected string for nil receiver: %s", got)
+func TestNewClientFromServerConfigSSE(t *testing.T) {
+	cfg := ServerConfig{
+		Type: "sse",
+		URL:  "http://example.com",
+	}
+	client, err := NewClientFromServerConfig(context.Background(), "test", cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if client == nil {
+		t.Fatal("expected non-nil client")
 	}
 }
 
-func TestDefaultHTTPRetryableStatuses(t *testing.T) {
-	retryable := defaultHTTPRetryable(&httpStatusError{status: http.StatusTooManyRequests})
-	if !retryable {
-		t.Fatal("429 should be retryable")
+func TestNewClientFromServerConfigHTTP(t *testing.T) {
+	cfg := ServerConfig{
+		Type: "http",
+		URL:  "http://example.com",
 	}
-	if defaultHTTPRetryable(&httpStatusError{status: http.StatusBadRequest}) {
-		t.Fatal("400 should not be retryable")
+	client, err := NewClientFromServerConfig(context.Background(), "test", cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if client == nil {
+		t.Fatal("expected non-nil client")
+	}
+}
+
+func TestNewClientFromServerConfigUnsupportedType(t *testing.T) {
+	cfg := ServerConfig{
+		Type: "unsupported",
+	}
+	_, err := NewClientFromServerConfig(context.Background(), "test", cfg)
+	if err == nil {
+		t.Fatal("expected error for unsupported type")
+	}
+	if !strings.Contains(err.Error(), "unsupported") {
+		t.Errorf("error should mention unsupported: %v", err)
+	}
+}
+
+func TestNewClientFromServerConfigDefaultStdio(t *testing.T) {
+	cfg := ServerConfig{
+		Command: "echo",
+	}
+	client, err := NewClientFromServerConfig(context.Background(), "test", cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if client == nil {
+		t.Fatal("expected non-nil client")
 	}
 }

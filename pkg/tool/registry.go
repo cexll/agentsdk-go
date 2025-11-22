@@ -15,8 +15,19 @@ import (
 type Registry struct {
 	mu         sync.RWMutex
 	tools      map[string]Tool
-	mcpClients []*mcp.Client
+	mcpClients []mcpClient
 	validator  Validator
+}
+
+type mcpClient interface {
+	Call(ctx context.Context, method string, params interface{}, dest interface{}) error
+	ListTools(ctx context.Context) ([]mcp.ToolDescriptor, error)
+	InvokeTool(ctx context.Context, name string, params map[string]interface{}) (*mcp.ToolCallResult, error)
+	Close() error
+}
+
+var newMCPClient = func(spec string) mcpClient {
+	return mcp.NewClient(spec)
 }
 
 const (
@@ -24,9 +35,6 @@ const (
 	mcpClientName             = "agentsdk-go"
 	mcpClientVersion          = "dev"
 )
-
-// mcpTransportBuilder enables tests to swap transport implementations.
-var mcpTransportBuilder = buildMCPTransport
 
 // NewRegistry creates a registry backed by the default validator.
 func NewRegistry() *Registry {
@@ -118,14 +126,10 @@ func (r *Registry) RegisterMCPServer(serverPath string) error {
 	if strings.TrimSpace(serverPath) == "" {
 		return fmt.Errorf("server path is empty")
 	}
-	opCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// 建立 MCP 连接后需要保持事件流存活，因此初始化阶段使用独立的上下文。
+	connectCtx := context.Background()
 
-	transport, err := mcpTransportBuilder(context.Background(), serverPath)
-	if err != nil {
-		return err
-	}
-	client := mcp.NewClient(transport)
+	client := newMCPClient(serverPath)
 	success := false
 	defer func() {
 		if !success {
@@ -133,11 +137,14 @@ func (r *Registry) RegisterMCPServer(serverPath string) error {
 		}
 	}()
 
-	if err := initializeMCPClient(opCtx, client); err != nil {
+	if err := initializeMCPClient(connectCtx, client); err != nil {
 		return fmt.Errorf("initialize MCP client: %w", err)
 	}
 
-	tools, err := client.ListTools(opCtx)
+	listCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	tools, err := client.ListTools(listCtx)
 	if err != nil {
 		return fmt.Errorf("list MCP tools: %w", err)
 	}
@@ -186,30 +193,6 @@ func (r *Registry) hasTool(name string) bool {
 	return exists
 }
 
-func buildMCPTransport(ctx context.Context, spec string) (mcp.Transport, error) {
-	spec = strings.TrimSpace(spec)
-	switch {
-	case spec == "":
-		return nil, fmt.Errorf("server path is empty")
-	case strings.HasPrefix(spec, "http://"), strings.HasPrefix(spec, "https://"):
-		return mcp.NewSSETransport(ctx, mcp.SSEOptions{BaseURL: spec})
-	default:
-		if after, ok := strings.CutPrefix(spec, "stdio://"); ok {
-			spec = after
-		}
-		parts := strings.Fields(spec)
-		if len(parts) == 0 {
-			return nil, fmt.Errorf("invalid stdio server path")
-		}
-		cmd := parts[0]
-		args := []string{}
-		if len(parts) > 1 {
-			args = parts[1:]
-		}
-		return mcp.NewSTDIOTransport(ctx, cmd, mcp.STDIOOptions{Args: args})
-	}
-}
-
 func convertMCPSchema(raw json.RawMessage) (*JSONSchema, error) {
 	if len(raw) == 0 {
 		return nil, nil
@@ -238,7 +221,7 @@ func convertMCPSchema(raw json.RawMessage) (*JSONSchema, error) {
 	return &schema, nil
 }
 
-func initializeMCPClient(ctx context.Context, client *mcp.Client) error {
+func initializeMCPClient(ctx context.Context, client mcpClient) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -269,7 +252,7 @@ type remoteTool struct {
 	name        string
 	description string
 	schema      *JSONSchema
-	client      *mcp.Client
+	client      mcpClient
 }
 
 func (r *remoteTool) Name() string        { return r.name }
