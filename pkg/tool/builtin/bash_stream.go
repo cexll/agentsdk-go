@@ -83,8 +83,8 @@ func (b *BashTool) StreamExecute(ctx context.Context, params map[string]interfac
 		stderrErr = consumeStream(execCtx, stderrPipe, emit, acc, true)
 	}()
 
-	waitErr := cmd.Wait()
 	wg.Wait()
+	waitErr := cmd.Wait()
 	duration := time.Since(start)
 
 	runErr := waitErr
