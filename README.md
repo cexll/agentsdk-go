@@ -4,17 +4,6 @@
 
 An Agent SDK implemented in Go that provides the full Claude Code core capabilities and middleware interception.
 
-## Breaking Changes in v0.6.0 (main, 2025-11-22)
-
-- Hooks are no longer in-process Go interfaces (`PreToolUseHook`, `PostToolUseHook`, etc.). The runtime now executes shell-based `ShellHook` commands that consume JSON on stdin and communicate decisions via exit codes (`0=allow`, `1=deny`, `2=ask`). Configure them through `.claude/settings.json` (`Hooks.PreToolUse/PostToolUse`) or programmatically with `api.Options.TypedHooks`. See `docs/migration-guide.md` for concrete migration steps.
-
-## Breaking Changes in v0.2.0 (2025-01-31)
-
-- Migrated to official MCP Go SDK `v1.1.0`; custom `pkg/mcp/adapter` removed (-819 LOC).
-- `RegisterMCPServer(ctx, serverPath)` now requires a `context.Context` parameter.
-- `Response.ProjectConfig` deprecated; use `Response.Settings` instead (removed in v0.3.0).
-- Added `runtime.Close()` for proper MCP session cleanup (should be called in `defer`).
-
 ## Overview
 
 agentsdk-go is a modular agent development framework that implements Claude Code's seven core capabilities (Hooks, MCP, Sandbox, Skills, Subagents, Commands, Plugins) and extends them with a six-point middleware interception mechanism. The SDK supports deployment scenarios across CLI, CI/CD, and enterprise platforms.
