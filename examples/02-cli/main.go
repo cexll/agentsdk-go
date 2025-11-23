@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/cexll/agentsdk-go/pkg/api"
@@ -17,21 +18,40 @@ const defaultModel = "claude-sonnet-4-5-20250929"
 
 func main() {
 	sessionID := flag.String("session-id", envOrDefault("SESSION_ID", "demo-session"), "session identifier to keep chat history")
-	settingsPath := flag.String("settings-path", "", "path to .claude/settings.json for sandbox/tools config")
+	projectRoot := flag.String("project-root", ".", "project root directory (default: current directory)")
+	enableMCP := flag.Bool("enable-mcp", true, "enable MCP servers from .claude/settings.json (auto-loaded)")
 	flag.Parse()
+
+	// Resolve project root path
+	absRoot, err := filepath.Abs(*projectRoot)
+	if err != nil {
+		log.Fatalf("resolve project root: %v", err)
+	}
 
 	provider := &modelpkg.AnthropicProvider{ModelName: defaultModel}
 
-	rt, err := api.New(context.Background(), api.Options{
+	opts := api.Options{
+		EntryPoint:   api.EntryPointCLI,
+		ProjectRoot:  absRoot,
 		ModelFactory: provider,
-		SettingsPath: *settingsPath,
-	})
+	}
+
+	if !*enableMCP {
+		// Empty slice tells the SDK to skip auto-loading MCP servers from settings.
+		opts.MCPServers = []string{}
+	}
+
+	rt, err := api.New(context.Background(), opts)
 	if err != nil {
 		log.Fatalf("build runtime: %v", err)
 	}
 	defer rt.Close()
 
 	fmt.Println("Type 'exit' to quit.")
+	if *enableMCP {
+		fmt.Println("MCP auto-load enabled; SDK will read .claude/settings.json. Use --enable-mcp=false to disable.")
+	}
+	fmt.Println()
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
