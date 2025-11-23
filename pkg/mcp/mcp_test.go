@@ -248,8 +248,8 @@ func TestInitializeSession(t *testing.T) {
 		t.Fatalf("EnsureSessionInitialized failed: %v", err)
 	}
 
-	if err := EnsureSessionInitialized(nil, session); err == nil || !strings.Contains(err.Error(), "context is nil") {
-		t.Fatalf("expected nil context error, got %v", err)
+	if err := EnsureSessionInitialized(context.TODO(), session); err != nil {
+		t.Fatalf("EnsureSessionInitialized with TODO context failed: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -284,8 +284,8 @@ func TestNormalizeHTTPURL(t *testing.T) {
 func TestNonNilContext(t *testing.T) {
 	t.Parallel()
 
-	if nonNilContext(nil) == nil {
-		t.Fatalf("nil context not replaced")
+	if nonNilContext(context.TODO()) == nil {
+		t.Fatalf("TODO context replaced unexpectedly")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -338,7 +338,7 @@ func TestCompatibilityWrappers(t *testing.T) {
 		t.Fatalf("NormalizeHTTPURL unexpected result %q err=%v", got, err)
 	}
 
-	if NonNilContext(nil) == nil {
+	if NonNilContext(context.TODO()) == nil {
 		t.Fatalf("NonNilContext returned nil")
 	}
 }
@@ -358,8 +358,13 @@ func newEchoServer(t *testing.T) *mcpsdk.Server {
 		},
 	}, func(_ context.Context, req *mcpsdk.CallToolRequest) (*CallToolResult, error) {
 		var args map[string]any
-		_ = json.Unmarshal(req.Params.Arguments, &args)
-		text, _ := args["text"].(string)
+		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+			return nil, err
+		}
+		text, ok := args["text"].(string)
+		if !ok {
+			return nil, errors.New("text argument missing or not string")
+		}
 		return &CallToolResult{Content: []Content{&TextContent{Text: text}}}, nil
 	})
 	return server

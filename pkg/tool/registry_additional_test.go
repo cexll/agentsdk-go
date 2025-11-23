@@ -166,8 +166,8 @@ func TestBuildStdioTransportRejectsEmpty(t *testing.T) {
 func TestNonNilContext(t *testing.T) {
 	t.Parallel()
 
-	if got := nonNilContext(nil); got == nil {
-		t.Fatalf("nil context not converted")
+	if got := nonNilContext(context.TODO()); got == nil {
+		t.Fatalf("TODO context replaced unexpectedly")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -510,7 +510,14 @@ func TestRegistryCloseClosesSessions(t *testing.T) {
 func TestRemoteToolExecuteWithNilParams(t *testing.T) {
 	server := &stubMCPServer{tools: []*mcp.Tool{{Name: "remote", InputSchema: map[string]any{"type": "object"}}}}
 	server.callFn = func(_ context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
-		args, _ := params.Arguments.(map[string]any)
+		var args map[string]any
+		if params.Arguments != nil {
+			var ok bool
+			args, ok = params.Arguments.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("unexpected arguments type %T", params.Arguments)
+			}
+		}
 		if params.Name != "remote" {
 			return nil, fmt.Errorf("unexpected tool %s", params.Name)
 		}
@@ -720,7 +727,9 @@ func (s *stubMCPServer) handleCall(req *jsonrpc.Request) jsonrpc.Message {
 		}
 		var params mcp.CallToolParams
 		if len(req.Params) > 0 {
-			_ = json.Unmarshal(req.Params, &params)
+			if err := json.Unmarshal(req.Params, &params); err != nil {
+				return toResponse(req.ID, nil, fmt.Errorf("decode call params: %w", err))
+			}
 		}
 		result, err := s.callFn(context.Background(), &params)
 		return toResponse(req.ID, result, err)

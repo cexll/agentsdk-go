@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -25,8 +27,10 @@ var newMCPClient = func(ctx context.Context, spec string) (*mcp.ClientSession, e
 }
 
 const (
-	httpHintType = "http"
-	sseHintType  = "sse"
+	httpHintType      = "http"
+	sseHintType       = "sse"
+	stdioSchemePrefix = "stdio://"
+	sseSchemePrefix   = "sse://"
 )
 
 // NewRegistry creates a registry backed by the default validator.
@@ -140,8 +144,11 @@ func (r *Registry) RegisterMCPServer(ctx context.Context, serverPath string) err
 		}
 	}()
 
-	if err := mcp.EnsureSessionInitialized(connectCtx, session); err != nil {
-		return fmt.Errorf("initialize MCP client: %w", err)
+	if err := connectCtx.Err(); err != nil {
+		return fmt.Errorf("initialize MCP client: connect context: %w", err)
+	}
+	if session.InitializeResult() == nil {
+		return fmt.Errorf("initialize MCP client: mcp session missing initialize result")
 	}
 	if err := connectCtx.Err(); err != nil {
 		return fmt.Errorf("connect MCP client: %w", err)
@@ -272,31 +279,125 @@ func convertMCPSchema(raw any) (*JSONSchema, error) {
 // Compatibility wrappers keep registry tests aligned with the shared MCP
 // transport builders now hosted in the mcp package.
 func buildMCPSessionTransport(ctx context.Context, spec string) (mcp.Transport, error) {
-	return mcp.BuildSessionTransport(ctx, spec)
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return nil, fmt.Errorf("mcp transport spec is empty")
+	}
+
+	lowered := strings.ToLower(spec)
+	switch {
+	case strings.HasPrefix(lowered, stdioSchemePrefix):
+		return buildStdioTransport(ctx, spec[len(stdioSchemePrefix):])
+	case strings.HasPrefix(lowered, sseSchemePrefix):
+		target := strings.TrimSpace(spec[len(sseSchemePrefix):])
+		return buildSSETransport(target, true)
+	}
+
+	if kind, endpoint, matched, err := parseHTTPFamilySpec(spec); err != nil {
+		return nil, err
+	} else if matched {
+		if kind == httpHintType {
+			return buildStreamableTransport(endpoint)
+		}
+		return buildSSETransport(endpoint, false)
+	}
+
+	if strings.HasPrefix(lowered, "http://") || strings.HasPrefix(lowered, "https://") {
+		return buildSSETransport(spec, false)
+	}
+
+	return buildStdioTransport(ctx, spec)
 }
 
 func buildSSETransport(endpoint string, allowSchemeGuess bool) (mcp.Transport, error) {
-	return mcp.BuildSSETransport(endpoint, allowSchemeGuess)
+	normalized, err := normalizeHTTPURL(endpoint, allowSchemeGuess)
+	if err != nil {
+		return nil, fmt.Errorf("invalid SSE endpoint: %w", err)
+	}
+	return &mcp.SSEClientTransport{Endpoint: normalized}, nil
 }
 
 func buildStreamableTransport(endpoint string) (mcp.Transport, error) {
-	return mcp.BuildStreamableTransport(endpoint)
+	normalized, err := normalizeHTTPURL(endpoint, false)
+	if err != nil {
+		return nil, fmt.Errorf("invalid streamable endpoint: %w", err)
+	}
+	return &mcp.StreamableClientTransport{Endpoint: normalized}, nil
 }
 
 func buildStdioTransport(ctx context.Context, cmdSpec string) (mcp.Transport, error) {
-	return mcp.BuildStdioTransport(ctx, cmdSpec)
+	cmdSpec = strings.TrimSpace(cmdSpec)
+	parts := strings.Fields(cmdSpec)
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("mcp stdio command is empty")
+	}
+	command := exec.CommandContext(nonNilContext(ctx), parts[0], parts[1:]...) // #nosec G204
+	return &mcp.CommandTransport{Command: command}, nil
 }
 
 func parseHTTPFamilySpec(spec string) (kind string, endpoint string, matched bool, err error) {
-	return mcp.ParseHTTPFamilySpec(spec)
+	u, parseErr := url.Parse(strings.TrimSpace(spec))
+	if parseErr != nil || u.Scheme == "" {
+		return "", "", false, nil
+	}
+	scheme := strings.ToLower(u.Scheme)
+	base, hintRaw, hasHint := strings.Cut(scheme, "+")
+	if !hasHint {
+		return "", "", false, nil
+	}
+	if base != "http" && base != "https" {
+		return "", "", false, nil
+	}
+	hint := hintRaw
+	if idx := strings.IndexByte(hint, '+'); idx >= 0 {
+		hint = hint[:idx]
+	}
+	var resolvedKind string
+	switch hint {
+	case "sse":
+		resolvedKind = sseHintType
+	case "stream", "streamable", "http", "json":
+		resolvedKind = httpHintType
+	default:
+		return "", "", true, fmt.Errorf("unsupported HTTP transport hint %q", hint)
+	}
+	normalized := *u
+	normalized.Scheme = base
+	endpoint, normErr := normalizeHTTPURL(normalized.String(), false)
+	if normErr != nil {
+		return "", "", true, fmt.Errorf("invalid %s endpoint: %w", resolvedKind, normErr)
+	}
+	return resolvedKind, endpoint, true, nil
 }
 
 func normalizeHTTPURL(raw string, allowSchemeGuess bool) (string, error) {
-	return mcp.NormalizeHTTPURL(raw, allowSchemeGuess)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("endpoint is empty")
+	}
+	if allowSchemeGuess && !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", fmt.Errorf("unsupported scheme %q", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return "", fmt.Errorf("missing host")
+	}
+	parsed.Scheme = scheme
+	return parsed.String(), nil
 }
 
 func nonNilContext(ctx context.Context) context.Context {
-	return mcp.NonNilContext(ctx)
+	if ctx != nil {
+		return ctx
+	}
+	return context.Background()
 }
 
 type remoteTool struct {
