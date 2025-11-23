@@ -4,12 +4,6 @@
 
 基于 Go 语言实现的 Agent SDK，提供完整的 Claude Code 核心功能和 Middleware 拦截机制。
 
-## 破坏性变更 (v0.6.0, main, 2025-11-22)
-
-- Hooks API 从 in-process Go 接口改为基于 shell 的 `ShellHook`。
-- Hooks 通过 stdin 接收 JSON 负载，并用退出码返回决策：`0=允许`、`1=拒绝`、`2=询问`（其他退出码视为错误）。
-- 迁移步骤见 `docs/migration-guide.md`。
-
 ## 概述
 
 agentsdk-go 是一个模块化的 Agent 开发框架，实现了 Claude Code 的 7 项核心功能（Hooks、MCP、Sandbox、Skills、Subagents、Commands、Plugins），并在此基础上扩展了 6 点 Middleware 拦截机制。该 SDK 支持 CLI、CI/CD 和企业平台等多种部署场景。
@@ -165,6 +159,10 @@ runtime, err := api.New(ctx, api.Options{
     ModelFactory:  provider,
     Middleware:    []middleware.Middleware{loggingMiddleware},
 })
+if err != nil {
+    log.Fatal(err)
+}
+defer runtime.Close()
 ```
 
 ### 流式输出
@@ -495,6 +493,7 @@ customMiddleware := middleware.Middleware{
 
 - Go 1.24.0+
 - [anthropic-sdk-go](https://github.com/anthropics/anthropic-sdk-go) - Anthropic 官方 SDK
+- [modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk) - 官方 MCP SDK
 - [fsnotify](https://github.com/fsnotify/fsnotify) - 文件系统监控
 - [yaml.v3](https://gopkg.in/yaml.v3) - YAML 解析
 - [google/uuid](https://github.com/google/uuid) - UUID 工具
