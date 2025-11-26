@@ -847,77 +847,181 @@ func coreToolResultPayload(call agent.ToolCall, res *tool.CallResult, err error)
 // ----------------- config + registries -----------------
 
 func registerTools(registry *tool.Registry, opts Options, settings *config.Settings, skReg *skills.Registry, cmdExec *commands.Executor) (*toolbuiltin.TaskTool, error) {
+	entry := effectiveEntryPoint(opts)
 	tools := opts.Tools
 	var taskTool *toolbuiltin.TaskTool
-	entry := effectiveEntryPoint(opts)
+
 	if len(tools) == 0 {
 		sandboxDisabled := settings != nil && settings.Sandbox != nil && settings.Sandbox.Enabled != nil && !*settings.Sandbox.Enabled
-		var (
-			bashTool  *toolbuiltin.BashTool
-			readTool  *toolbuiltin.ReadTool
-			writeTool *toolbuiltin.WriteTool
-			editTool  *toolbuiltin.EditTool
-			grepTool  *toolbuiltin.GrepTool
-			globTool  *toolbuiltin.GlobTool
-		)
-
-		if sandboxDisabled {
-			disabledSandbox := security.NewDisabledSandbox()
-			bashTool = toolbuiltin.NewBashToolWithSandbox(opts.ProjectRoot, disabledSandbox)
-			readTool = toolbuiltin.NewReadToolWithSandbox(opts.ProjectRoot, disabledSandbox)
-			writeTool = toolbuiltin.NewWriteToolWithSandbox(opts.ProjectRoot, disabledSandbox)
-			editTool = toolbuiltin.NewEditToolWithSandbox(opts.ProjectRoot, disabledSandbox)
-			grepTool = toolbuiltin.NewGrepToolWithSandbox(opts.ProjectRoot, disabledSandbox)
-			globTool = toolbuiltin.NewGlobToolWithSandbox(opts.ProjectRoot, disabledSandbox)
-		} else {
-			bashTool = toolbuiltin.NewBashToolWithRoot(opts.ProjectRoot)
-			readTool = toolbuiltin.NewReadToolWithRoot(opts.ProjectRoot)
-			writeTool = toolbuiltin.NewWriteToolWithRoot(opts.ProjectRoot)
-			editTool = toolbuiltin.NewEditToolWithRoot(opts.ProjectRoot)
-			grepTool = toolbuiltin.NewGrepToolWithRoot(opts.ProjectRoot)
-			globTool = toolbuiltin.NewGlobToolWithRoot(opts.ProjectRoot)
-		}
-
-		// CLI 模式下允许管道等 shell 元字符
-		if entry == EntryPointCLI {
-			bashTool.AllowShellMetachars(true)
-		}
 		if skReg == nil {
 			skReg = skills.NewRegistry()
 		}
 		if cmdExec == nil {
 			cmdExec = commands.NewExecutor()
 		}
-		tools = []tool.Tool{
-			bashTool,
-			readTool,
-			writeTool,
-			editTool,
-			toolbuiltin.NewWebFetchTool(nil),
-			toolbuiltin.NewWebSearchTool(nil),
-			toolbuiltin.NewBashOutputTool(nil),
-			toolbuiltin.NewTodoWriteTool(),
-			toolbuiltin.NewSkillTool(skReg, nil),
-			toolbuiltin.NewSlashCommandTool(cmdExec),
-			grepTool,
-			globTool,
+
+		factories := builtinToolFactories(opts.ProjectRoot, sandboxDisabled, entry, skReg, cmdExec)
+		names := builtinOrder(entry)
+		selectedNames := filterBuiltinNames(opts.EnabledBuiltinTools, names)
+		for _, name := range selectedNames {
+			ctor := factories[name]
+			if ctor == nil {
+				continue
+			}
+			impl := ctor()
+			if impl == nil {
+				continue
+			}
+			if t, ok := impl.(*toolbuiltin.TaskTool); ok {
+				taskTool = t
+			}
+			tools = append(tools, impl)
 		}
-		if shouldRegisterTaskTool(entry) {
-			taskTool = toolbuiltin.NewTaskTool()
-			tools = append(tools, taskTool)
+
+		if len(opts.CustomTools) > 0 {
+			tools = append(tools, opts.CustomTools...)
 		}
 	} else {
 		taskTool = locateTaskTool(tools)
 	}
+
+	seen := make(map[string]struct{})
 	for _, impl := range tools {
 		if impl == nil {
 			continue
 		}
+		name := strings.TrimSpace(impl.Name())
+		if name == "" {
+			continue
+		}
+		canon := canonicalToolName(name)
+		if _, ok := seen[canon]; ok {
+			log.Printf("tool %s skipped: duplicate name", name)
+			continue
+		}
+		seen[canon] = struct{}{}
 		if err := registry.Register(impl); err != nil {
 			return nil, fmt.Errorf("api: register tool %s: %w", impl.Name(), err)
 		}
 	}
+
+	if taskTool == nil {
+		taskTool = locateTaskTool(tools)
+	}
 	return taskTool, nil
+}
+
+func builtinToolFactories(root string, sandboxDisabled bool, entry EntryPoint, skReg *skills.Registry, cmdExec *commands.Executor) map[string]func() tool.Tool {
+	factories := map[string]func() tool.Tool{}
+
+	bashCtor := func() tool.Tool {
+		var bash *toolbuiltin.BashTool
+		if sandboxDisabled {
+			bash = toolbuiltin.NewBashToolWithSandbox(root, security.NewDisabledSandbox())
+		} else {
+			bash = toolbuiltin.NewBashToolWithRoot(root)
+		}
+		if entry == EntryPointCLI {
+			bash.AllowShellMetachars(true)
+		}
+		return bash
+	}
+
+	readCtor := func() tool.Tool {
+		if sandboxDisabled {
+			return toolbuiltin.NewReadToolWithSandbox(root, security.NewDisabledSandbox())
+		}
+		return toolbuiltin.NewReadToolWithRoot(root)
+	}
+	writeCtor := func() tool.Tool {
+		if sandboxDisabled {
+			return toolbuiltin.NewWriteToolWithSandbox(root, security.NewDisabledSandbox())
+		}
+		return toolbuiltin.NewWriteToolWithRoot(root)
+	}
+	editCtor := func() tool.Tool {
+		if sandboxDisabled {
+			return toolbuiltin.NewEditToolWithSandbox(root, security.NewDisabledSandbox())
+		}
+		return toolbuiltin.NewEditToolWithRoot(root)
+	}
+	grepCtor := func() tool.Tool {
+		if sandboxDisabled {
+			return toolbuiltin.NewGrepToolWithSandbox(root, security.NewDisabledSandbox())
+		}
+		return toolbuiltin.NewGrepToolWithRoot(root)
+	}
+	globCtor := func() tool.Tool {
+		if sandboxDisabled {
+			return toolbuiltin.NewGlobToolWithSandbox(root, security.NewDisabledSandbox())
+		}
+		return toolbuiltin.NewGlobToolWithRoot(root)
+	}
+
+	factories["bash"] = bashCtor
+	factories["file_read"] = readCtor
+	factories["file_write"] = writeCtor
+	factories["file_edit"] = editCtor
+	factories["grep"] = grepCtor
+	factories["glob"] = globCtor
+	factories["web_fetch"] = func() tool.Tool { return toolbuiltin.NewWebFetchTool(nil) }
+	factories["web_search"] = func() tool.Tool { return toolbuiltin.NewWebSearchTool(nil) }
+	factories["bash_output"] = func() tool.Tool { return toolbuiltin.NewBashOutputTool(nil) }
+	factories["todo_write"] = func() tool.Tool { return toolbuiltin.NewTodoWriteTool() }
+	factories["skill"] = func() tool.Tool { return toolbuiltin.NewSkillTool(skReg, nil) }
+	factories["slash_command"] = func() tool.Tool { return toolbuiltin.NewSlashCommandTool(cmdExec) }
+
+	if shouldRegisterTaskTool(entry) {
+		factories["task"] = func() tool.Tool { return toolbuiltin.NewTaskTool() }
+	}
+
+	return factories
+}
+
+func builtinOrder(entry EntryPoint) []string {
+	order := []string{
+		"bash",
+		"file_read",
+		"file_write",
+		"file_edit",
+		"web_fetch",
+		"web_search",
+		"bash_output",
+		"todo_write",
+		"skill",
+		"slash_command",
+		"grep",
+		"glob",
+	}
+	if shouldRegisterTaskTool(entry) {
+		order = append(order, "task")
+	}
+	return order
+}
+
+func filterBuiltinNames(enabled []string, order []string) []string {
+	if enabled == nil {
+		return append([]string(nil), order...)
+	}
+	if len(enabled) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(enabled))
+	repl := strings.NewReplacer("-", "_", " ", "_")
+	for _, name := range enabled {
+		key := strings.ToLower(strings.TrimSpace(name))
+		key = repl.Replace(key)
+		if key != "" {
+			set[key] = struct{}{}
+		}
+	}
+	var filtered []string
+	for _, name := range order {
+		if _, ok := set[name]; ok {
+			filtered = append(filtered, name)
+		}
+	}
+	return filtered
 }
 
 func shouldRegisterTaskTool(entry EntryPoint) bool {

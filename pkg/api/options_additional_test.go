@@ -3,10 +3,12 @@ package api
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	coreevents "github.com/cexll/agentsdk-go/pkg/core/events"
 	corehooks "github.com/cexll/agentsdk-go/pkg/core/hooks"
+	"github.com/cexll/agentsdk-go/pkg/tool"
 )
 
 func TestWithMaxSessionsRespectsPositiveOnly(t *testing.T) {
@@ -76,4 +78,46 @@ func TestRuntimeHookAdapterStopNilExecutor(t *testing.T) {
 	if err := adapter.Stop(context.Background(), "any"); err != nil {
 		t.Fatalf("nil adapter should no-op, got %v", err)
 	}
+}
+
+func TestOptionsToolFieldsDefaultsAndPriority(t *testing.T) {
+	root := t.TempDir()
+	legacy := &stubTool{name: "legacy"}
+	custom := &stubTool{name: "custom"}
+	enabled := []string{"bash", "grep"}
+
+	opts := Options{
+		ProjectRoot:         root,
+		Tools:               []tool.Tool{legacy},
+		EnabledBuiltinTools: enabled,
+		CustomTools:         []tool.Tool{custom},
+	}
+	applied := opts.withDefaults()
+	if len(applied.Tools) != 1 || applied.Tools[0] != legacy {
+		t.Fatalf("tools slice should be preserved for legacy override")
+	}
+	if !reflect.DeepEqual(applied.EnabledBuiltinTools, enabled) {
+		t.Fatalf("enabled builtins should remain untouched; got %+v", applied.EnabledBuiltinTools)
+	}
+	if len(applied.CustomTools) != 1 || applied.CustomTools[0] != custom {
+		t.Fatalf("custom tools should be preserved; got %+v", applied.CustomTools)
+	}
+
+	empty := Options{ProjectRoot: root, EnabledBuiltinTools: []string{}, CustomTools: nil}
+	emptyApplied := empty.withDefaults()
+	if emptyApplied.EnabledBuiltinTools == nil {
+		t.Fatalf("empty slice should not be defaulted to nil")
+	}
+	if emptyApplied.CustomTools != nil {
+		t.Fatalf("custom tools should remain nil when unset")
+	}
+}
+
+type stubTool struct{ name string }
+
+func (t *stubTool) Name() string             { return t.name }
+func (t *stubTool) Description() string      { return "stub" }
+func (t *stubTool) Schema() *tool.JSONSchema { return &tool.JSONSchema{Type: "object"} }
+func (t *stubTool) Execute(context.Context, map[string]interface{}) (*tool.ToolResult, error) {
+	return &tool.ToolResult{Output: t.name}, nil
 }

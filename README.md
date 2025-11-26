@@ -202,6 +202,29 @@ for event := range events {
 }
 ```
 
+### Customize Tool Registration
+
+Choose which built-ins to load and append your own tools:
+
+```go
+rt, err := api.New(ctx, api.Options{
+    ProjectRoot:         ".",
+    ModelFactory:        provider,
+    EnabledBuiltinTools: []string{"bash", "file_read"}, // nil = all, empty = none
+    CustomTools:         []tool.Tool{&EchoTool{}},      // appended when Tools is empty
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer rt.Close()
+```
+
+- `EnabledBuiltinTools`: nil→全部内置；空切片→禁用内置；非空→只启用列出的内置（大小写不敏感，下划线命名）。  
+- `CustomTools`: 追加自定义工具；当 `Tools` 非空时被忽略。  
+- `Tools`: 旧字段，非空时完全接管工具集（保持向后兼容）。
+
+See a runnable demo in `examples/05-custom-tools`.
+
 ## Examples
 
 The repository includes four progressive examples aligned to the new four-layer path:
@@ -209,6 +232,7 @@ The repository includes four progressive examples aligned to the new four-layer 
 - `02-cli` – interactive REPL with session history and optional config load.
 - `03-http` – REST + SSE server on `:8080`.
 - `04-advanced` – full pipeline exercising middleware, hooks, MCP, sandbox, skills, and subagents.
+- `05-custom-tools` – selective built-ins plus custom tool registration.
 
 ## Project Structure
 

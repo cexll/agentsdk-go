@@ -135,8 +135,20 @@ type Options struct {
 	TokenLimit        int
 	MaxSessions       int
 
-	Tools      []tool.Tool
-	MCPServers []string
+	Tools []tool.Tool
+
+	// EnabledBuiltinTools controls which built-in tools are registered when Options.Tools is empty.
+	// - nil (default): register all built-ins to preserve current behaviour
+	// - empty slice: disable all built-in tools
+	// - non-empty: enable only the listed built-ins (case-insensitive).
+	// If Tools is non-empty, this whitelist is ignored in favour of the legacy Tools override.
+	// Available built-in names include: bash, file_read, file_write, grep, glob.
+	EnabledBuiltinTools []string
+
+	// CustomTools appends caller-supplied tool.Tool implementations to the selected built-ins
+	// when Tools is empty. Ignored when Tools is non-empty (legacy override takes priority).
+	CustomTools []tool.Tool
+	MCPServers  []string
 
 	TypedHooks     []corehooks.ShellHook
 	HookMiddleware []coremw.Middleware
@@ -241,6 +253,10 @@ func WithMaxSessions(n int) func(*Options) {
 }
 
 func (o Options) withDefaults() Options {
+	// withDefaults normalises entrypoint/mode, resolves project and settings paths,
+	// and leaves tool selection untouched: Tools stays as provided (legacy override),
+	// EnabledBuiltinTools/CustomTools keep their caller-supplied values for later
+	// registration logic (nil means register all built-ins, empty slice means none).
 	if o.EntryPoint == "" {
 		o.EntryPoint = defaultEntrypoint
 	}
