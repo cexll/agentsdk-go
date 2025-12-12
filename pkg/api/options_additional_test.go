@@ -58,7 +58,7 @@ func TestOptionsWithDefaultsPopulatesMissingFields(t *testing.T) {
 
 func TestRuntimeHookAdapterRecordsAndIgnoresNilRecorder(t *testing.T) {
 	adapter := &runtimeHookAdapter{executor: &corehooks.Executor{}}
-	if err := adapter.PreToolUse(context.Background(), coreevents.ToolUsePayload{Name: "ping"}); err != nil {
+	if _, err := adapter.PreToolUse(context.Background(), coreevents.ToolUsePayload{Name: "ping"}); err != nil {
 		t.Fatalf("pre tool use: %v", err)
 	}
 

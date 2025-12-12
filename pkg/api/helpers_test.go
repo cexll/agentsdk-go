@@ -526,7 +526,7 @@ func TestRuntimeHookAdapterRecordsEvents(t *testing.T) {
 	exec := newHookExecutor(Options{}, rec, nil)
 	adapter := &runtimeHookAdapter{executor: exec, recorder: rec}
 
-	if err := adapter.PreToolUse(context.Background(), coreevents.ToolUsePayload{Name: "t"}); err != nil {
+	if _, err := adapter.PreToolUse(context.Background(), coreevents.ToolUsePayload{Name: "t"}); err != nil {
 		t.Fatalf("pre: %v", err)
 	}
 	if err := adapter.PostToolUse(context.Background(), coreevents.ToolResultPayload{Name: "t"}); err != nil {

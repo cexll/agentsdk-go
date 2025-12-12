@@ -39,45 +39,34 @@ func buildSettingsHooks(settings *config.Settings) []corehooks.ShellHook {
 		env[k] = v
 	}
 
-	// Build PreToolUse hooks
-	for toolName, cmd := range settings.Hooks.PreToolUse {
-		if cmd == "" {
-			continue
+	addHooks := func(event coreevents.EventType, cmds map[string]string, prefix string) {
+		for matcher, cmd := range cmds {
+			if cmd == "" {
+				continue
+			}
+			selectorPattern := normalizeToolSelectorPattern(matcher)
+			sel, err := corehooks.NewSelector(selectorPattern, "")
+			if err != nil {
+				// skip invalid selector patterns rather than failing runtime startup
+				continue
+			}
+			hooks = append(hooks, corehooks.ShellHook{
+				Event:    event,
+				Command:  cmd,
+				Selector: sel,
+				Env:      env,
+				Name:     "settings:" + prefix + ":" + matcher,
+			})
 		}
-		selectorPattern := normalizeToolSelectorPattern(toolName)
-		sel, err := corehooks.NewSelector(selectorPattern, "")
-		if err != nil {
-			// skip invalid selector patterns rather than failing runtime startup
-			continue
-		}
-		hooks = append(hooks, corehooks.ShellHook{
-			Event:    coreevents.PreToolUse,
-			Command:  cmd,
-			Selector: sel,
-			Env:      env,
-			Name:     "settings:pre:" + toolName,
-		})
 	}
 
-	// Build PostToolUse hooks
-	for toolName, cmd := range settings.Hooks.PostToolUse {
-		if cmd == "" {
-			continue
-		}
-		selectorPattern := normalizeToolSelectorPattern(toolName)
-		sel, err := corehooks.NewSelector(selectorPattern, "")
-		if err != nil {
-			// skip invalid selector patterns rather than failing runtime startup
-			continue
-		}
-		hooks = append(hooks, corehooks.ShellHook{
-			Event:    coreevents.PostToolUse,
-			Command:  cmd,
-			Selector: sel,
-			Env:      env,
-			Name:     "settings:post:" + toolName,
-		})
-	}
+	addHooks(coreevents.PreToolUse, settings.Hooks.PreToolUse, "pre")
+	addHooks(coreevents.PostToolUse, settings.Hooks.PostToolUse, "post")
+	addHooks(coreevents.PermissionRequest, settings.Hooks.PermissionRequest, "permission")
+	addHooks(coreevents.SessionStart, settings.Hooks.SessionStart, "session_start")
+	addHooks(coreevents.SessionEnd, settings.Hooks.SessionEnd, "session_end")
+	addHooks(coreevents.SubagentStart, settings.Hooks.SubagentStart, "subagent_start")
+	addHooks(coreevents.SubagentStop, settings.Hooks.SubagentStop, "subagent_stop")
 
 	return hooks
 }

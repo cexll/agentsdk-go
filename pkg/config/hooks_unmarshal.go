@@ -28,30 +28,41 @@ func (h *HooksConfig) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("hooks: invalid JSON: %w", err)
 	}
 
-	// Initialize maps
-	if h.PreToolUse == nil {
-		h.PreToolUse = make(map[string]string)
+	initMap := func(dst *map[string]string) {
+		if *dst == nil {
+			*dst = make(map[string]string)
+		}
 	}
-	if h.PostToolUse == nil {
-		h.PostToolUse = make(map[string]string)
+	// Initialize maps so callers can rely on non-nil fields.
+	initMap(&h.PreToolUse)
+	initMap(&h.PostToolUse)
+	initMap(&h.PermissionRequest)
+	initMap(&h.SessionStart)
+	initMap(&h.SessionEnd)
+	initMap(&h.SubagentStart)
+	initMap(&h.SubagentStop)
+
+	fields := []struct {
+		name   string
+		target *map[string]string
+	}{
+		{name: "PreToolUse", target: &h.PreToolUse},
+		{name: "PostToolUse", target: &h.PostToolUse},
+		{name: "PermissionRequest", target: &h.PermissionRequest},
+		{name: "SessionStart", target: &h.SessionStart},
+		{name: "SessionEnd", target: &h.SessionEnd},
+		{name: "SubagentStart", target: &h.SubagentStart},
+		{name: "SubagentStop", target: &h.SubagentStop},
 	}
 
-	// Process PreToolUse field
-	if preData, ok := raw["PreToolUse"]; ok {
-		converted, err := parseHookField(preData)
-		if err != nil {
-			return fmt.Errorf("hooks: PreToolUse: %w", err)
+	for _, field := range fields {
+		if fieldData, ok := raw[field.name]; ok {
+			converted, err := parseHookField(fieldData)
+			if err != nil {
+				return fmt.Errorf("hooks: %s: %w", field.name, err)
+			}
+			*field.target = converted
 		}
-		h.PreToolUse = converted
-	}
-
-	// Process PostToolUse field
-	if postData, ok := raw["PostToolUse"]; ok {
-		converted, err := parseHookField(postData)
-		if err != nil {
-			return fmt.Errorf("hooks: PostToolUse: %w", err)
-		}
-		h.PostToolUse = converted
 	}
 
 	return nil

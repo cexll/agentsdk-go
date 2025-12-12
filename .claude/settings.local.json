@@ -7,7 +7,10 @@
       "Bash(git rm:*)",
       "Bash(git commit:*)",
       "Bash(go test:*)",
-      "Bash(go tool cover:*)"
+      "Bash(go tool cover:*)",
+      "Bash(gh issue create:*)",
+      "Bash(gh label list:*)",
+      "Bash(codeagent-wrapper --backend codex -:*)"
     ],
     "deny": [],
     "ask": []

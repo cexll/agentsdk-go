@@ -203,6 +203,26 @@ func TestHooksConfig_UnmarshalJSON_SDKFormat(t *testing.T) {
 	}
 }
 
+func TestHooksConfig_UnmarshalJSON_NewFields(t *testing.T) {
+	t.Parallel()
+	input := `{
+		"PermissionRequest": {"bash": "echo perm"},
+		"SessionStart": {"*": "echo start"},
+		"SessionEnd": {"*": "echo end"},
+		"SubagentStart": {"worker": "echo sa start"},
+		"SubagentStop": {"worker": "echo sa stop"}
+	}`
+
+	var got HooksConfig
+	err := json.Unmarshal([]byte(input), &got)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"bash": "echo perm"}, got.PermissionRequest)
+	require.Equal(t, map[string]string{"*": "echo start"}, got.SessionStart)
+	require.Equal(t, map[string]string{"*": "echo end"}, got.SessionEnd)
+	require.Equal(t, map[string]string{"worker": "echo sa start"}, got.SubagentStart)
+	require.Equal(t, map[string]string{"worker": "echo sa stop"}, got.SubagentStop)
+}
+
 func TestHooksConfig_UnmarshalJSON_MixedFormat(t *testing.T) {
 	t.Parallel()
 

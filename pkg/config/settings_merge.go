@@ -111,6 +111,11 @@ func mergeHooks(lower, higher *HooksConfig) *HooksConfig {
 	out := cloneHooks(lower)
 	out.PreToolUse = mergeMaps(lower.PreToolUse, higher.PreToolUse)
 	out.PostToolUse = mergeMaps(lower.PostToolUse, higher.PostToolUse)
+	out.PermissionRequest = mergeMaps(lower.PermissionRequest, higher.PermissionRequest)
+	out.SessionStart = mergeMaps(lower.SessionStart, higher.SessionStart)
+	out.SessionEnd = mergeMaps(lower.SessionEnd, higher.SessionEnd)
+	out.SubagentStart = mergeMaps(lower.SubagentStart, higher.SubagentStart)
+	out.SubagentStop = mergeMaps(lower.SubagentStop, higher.SubagentStop)
 	return out
 }
 
@@ -383,6 +388,11 @@ func cloneHooks(src *HooksConfig) *HooksConfig {
 	out := *src
 	out.PreToolUse = mergeMaps(nil, src.PreToolUse)
 	out.PostToolUse = mergeMaps(nil, src.PostToolUse)
+	out.PermissionRequest = mergeMaps(nil, src.PermissionRequest)
+	out.SessionStart = mergeMaps(nil, src.SessionStart)
+	out.SessionEnd = mergeMaps(nil, src.SessionEnd)
+	out.SubagentStart = mergeMaps(nil, src.SubagentStart)
+	out.SubagentStop = mergeMaps(nil, src.SubagentStop)
 	return &out
 }
 

@@ -11,16 +11,20 @@ import (
 type EventType string
 
 const (
-	PreToolUse       EventType = "PreToolUse"
-	PostToolUse      EventType = "PostToolUse"
-	PreCompact       EventType = "PreCompact"
-	ContextCompacted EventType = "ContextCompacted"
-	UserPromptSubmit EventType = "UserPromptSubmit"
-	SessionStart     EventType = "SessionStart"
-	Stop             EventType = "Stop"
-	SubagentStop     EventType = "SubagentStop"
-	Notification     EventType = "Notification"
-	TokenUsage       EventType = "TokenUsage"
+	PreToolUse        EventType = "PreToolUse"
+	PostToolUse       EventType = "PostToolUse"
+	PreCompact        EventType = "PreCompact"
+	ContextCompacted  EventType = "ContextCompacted"
+	UserPromptSubmit  EventType = "UserPromptSubmit"
+	SessionStart      EventType = "SessionStart"
+	SessionEnd        EventType = "SessionEnd"
+	Stop              EventType = "Stop"
+	SubagentStart     EventType = "SubagentStart"
+	SubagentStop      EventType = "SubagentStop"
+	Notification      EventType = "Notification"
+	TokenUsage        EventType = "TokenUsage"
+	PermissionRequest EventType = "PermissionRequest"
+	ModelSelected     EventType = "ModelSelected"
 )
 
 // Event represents a single occurrence in the system. It is intentionally
@@ -91,9 +95,34 @@ type StopPayload struct {
 
 // SubagentStopPayload is emitted when a subagent stops independently.
 type SubagentStopPayload struct {
-	Name   string
-	Reason string
+	Name           string
+	Reason         string
+	AgentID        string // unique identifier for the subagent instance
+	TranscriptPath string // path to the subagent transcript file
 }
+
+// SubagentStartPayload is emitted when a subagent starts.
+type SubagentStartPayload struct {
+	Name     string
+	AgentID  string         // unique identifier for the subagent instance
+	Metadata map[string]any // optional metadata
+}
+
+// PermissionRequestPayload is emitted when a tool requests permission.
+type PermissionRequestPayload struct {
+	ToolName   string
+	ToolParams map[string]any
+	Reason     string // optional reason for the permission request
+}
+
+// PermissionDecisionType represents the decision from a permission request hook.
+type PermissionDecisionType string
+
+const (
+	PermissionAllow PermissionDecisionType = "allow"
+	PermissionDeny  PermissionDecisionType = "deny"
+	PermissionAsk   PermissionDecisionType = "ask"
+)
 
 // NotificationPayload transports informational messages.
 type NotificationPayload struct {
@@ -111,4 +140,11 @@ type TokenUsagePayload struct {
 	Model         string `json:"model,omitempty"`
 	SessionID     string `json:"session_id,omitempty"`
 	RequestID     string `json:"request_id,omitempty"`
+}
+
+// ModelSelectedPayload is emitted when a model is selected for tool execution.
+type ModelSelectedPayload struct {
+	ToolName  string
+	ModelTier string
+	Reason    string
 }

@@ -36,6 +36,15 @@ const (
 	defaultMaxSessions            = 1000
 )
 
+// ModelTier represents cost-based model classification for optimization.
+type ModelTier string
+
+const (
+	ModelTierLow  ModelTier = "low"  // Low cost: Haiku
+	ModelTierMid  ModelTier = "mid"  // Mid cost: Sonnet
+	ModelTierHigh ModelTier = "high" // High cost: Opus
+)
+
 // CLIContext captures optional metadata supplied by the CLI surface.
 type CLIContext struct {
 	User      string
@@ -126,7 +135,17 @@ type Options struct {
 
 	Model        model.Model
 	ModelFactory ModelFactory
+
+	// ModelPool maps tiers to model instances for cost optimization.
+	// Use ModelTier constants (ModelTierLow, ModelTierMid, ModelTierHigh) as keys.
+	ModelPool map[ModelTier]model.Model
+	// SubagentModelMapping maps subagent type names to model tiers.
+	// Keys should be lowercase subagent types: "general-purpose", "explore", "plan".
+	// Subagents not in this map use the default Model.
+	SubagentModelMapping map[string]ModelTier
+
 	SystemPrompt string
+	RulesEnabled *bool // nil = 默认启用，false = 禁用
 
 	Middleware        []middleware.Middleware
 	MiddlewareTimeout time.Duration
@@ -185,6 +204,7 @@ type Request struct {
 	Prompt         string
 	Mode           ModeContext
 	SessionID      string
+	Model          ModelTier // Optional: override model tier for this request
 	Traits         []string
 	Tags           map[string]string
 	Channels       []string
@@ -411,6 +431,25 @@ func cloneStrings(in []string) []string {
 	return slices.Compact(out)
 }
 
+// WithModelPool configures a pool of models indexed by tier.
+func WithModelPool(pool map[ModelTier]model.Model) func(*Options) {
+	return func(o *Options) {
+		if pool != nil {
+			o.ModelPool = pool
+		}
+	}
+}
+
+// WithSubagentModelMapping configures subagent-type-to-tier mappings for model selection.
+// Keys should be lowercase subagent type names (e.g., "explore", "plan").
+func WithSubagentModelMapping(mapping map[string]ModelTier) func(*Options) {
+	return func(o *Options) {
+		if mapping != nil {
+			o.SubagentModelMapping = mapping
+		}
+	}
+}
+
 // HookRecorder mirrors the historical api hook recorder contract.
 type HookRecorder interface {
 	Record(coreevents.Event)
@@ -448,15 +487,33 @@ type runtimeHookAdapter struct {
 	recorder HookRecorder
 }
 
-func (h *runtimeHookAdapter) PreToolUse(ctx context.Context, evt coreevents.ToolUsePayload) error {
+func (h *runtimeHookAdapter) PreToolUse(ctx context.Context, evt coreevents.ToolUsePayload) (map[string]any, error) {
 	if h == nil || h.executor == nil {
-		return nil
+		return evt.Params, nil
 	}
-	if err := h.executor.Publish(coreevents.Event{Type: coreevents.PreToolUse, Payload: evt}); err != nil {
-		return err
+	results, err := h.executor.Execute(ctx, coreevents.Event{Type: coreevents.PreToolUse, Payload: evt})
+	if err != nil {
+		return nil, err
 	}
 	h.record(coreevents.Event{Type: coreevents.PreToolUse, Payload: evt})
-	return nil
+
+	params := evt.Params
+	for _, res := range results {
+		if res.Permission == nil {
+			continue
+		}
+		toolInput, ok := res.Permission["tool_input"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, ok := toolInput["name"].(string); ok && name != "" && name != evt.Name {
+			continue
+		}
+		if modified, ok := toolInput["params"].(map[string]any); ok {
+			params = modified
+		}
+	}
+	return params, nil
 }
 
 func (h *runtimeHookAdapter) PostToolUse(ctx context.Context, evt coreevents.ToolResultPayload) error {
@@ -491,6 +548,85 @@ func (h *runtimeHookAdapter) Stop(ctx context.Context, reason string) error {
 		return err
 	}
 	h.record(coreevents.Event{Type: coreevents.Stop, Payload: payload})
+	return nil
+}
+
+func (h *runtimeHookAdapter) PermissionRequest(ctx context.Context, evt coreevents.PermissionRequestPayload) (coreevents.PermissionDecisionType, error) {
+	if h == nil || h.executor == nil {
+		return coreevents.PermissionAsk, nil
+	}
+	results, err := h.executor.Execute(ctx, coreevents.Event{Type: coreevents.PermissionRequest, Payload: evt})
+	if err != nil {
+		return coreevents.PermissionAsk, err
+	}
+
+	decision := coreevents.PermissionAllow
+	for _, res := range results {
+		switch res.Decision {
+		case corehooks.DecisionDeny:
+			decision = coreevents.PermissionDeny
+		case corehooks.DecisionAsk:
+			if decision != coreevents.PermissionDeny {
+				decision = coreevents.PermissionAsk
+			}
+		}
+	}
+	h.record(coreevents.Event{Type: coreevents.PermissionRequest, Payload: evt})
+	return decision, nil
+}
+
+func (h *runtimeHookAdapter) SessionStart(ctx context.Context, evt coreevents.SessionPayload) error {
+	if h == nil || h.executor == nil {
+		return nil
+	}
+	if err := h.executor.Publish(coreevents.Event{Type: coreevents.SessionStart, Payload: evt}); err != nil {
+		return err
+	}
+	h.record(coreevents.Event{Type: coreevents.SessionStart, Payload: evt})
+	return nil
+}
+
+func (h *runtimeHookAdapter) SessionEnd(ctx context.Context, evt coreevents.SessionPayload) error {
+	if h == nil || h.executor == nil {
+		return nil
+	}
+	if err := h.executor.Publish(coreevents.Event{Type: coreevents.SessionEnd, Payload: evt}); err != nil {
+		return err
+	}
+	h.record(coreevents.Event{Type: coreevents.SessionEnd, Payload: evt})
+	return nil
+}
+
+func (h *runtimeHookAdapter) SubagentStart(ctx context.Context, evt coreevents.SubagentStartPayload) error {
+	if h == nil || h.executor == nil {
+		return nil
+	}
+	if err := h.executor.Publish(coreevents.Event{Type: coreevents.SubagentStart, Payload: evt}); err != nil {
+		return err
+	}
+	h.record(coreevents.Event{Type: coreevents.SubagentStart, Payload: evt})
+	return nil
+}
+
+func (h *runtimeHookAdapter) SubagentStop(ctx context.Context, evt coreevents.SubagentStopPayload) error {
+	if h == nil || h.executor == nil {
+		return nil
+	}
+	if err := h.executor.Publish(coreevents.Event{Type: coreevents.SubagentStop, Payload: evt}); err != nil {
+		return err
+	}
+	h.record(coreevents.Event{Type: coreevents.SubagentStop, Payload: evt})
+	return nil
+}
+
+func (h *runtimeHookAdapter) ModelSelected(ctx context.Context, evt coreevents.ModelSelectedPayload) error {
+	if h == nil || h.executor == nil {
+		return nil
+	}
+	if err := h.executor.Publish(coreevents.Event{Type: coreevents.ModelSelected, Payload: evt}); err != nil {
+		return err
+	}
+	h.record(coreevents.Event{Type: coreevents.ModelSelected, Payload: evt})
 	return nil
 }
 

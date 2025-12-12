@@ -56,17 +56,18 @@ func streamEmitFromContext(ctx context.Context) streamEmitFunc {
 
 // Runtime exposes the unified SDK surface that powers CLI/CI/enterprise entrypoints.
 type Runtime struct {
-	opts      Options
-	mode      ModeContext
-	settings  *config.Settings
-	cfg       *config.Settings
-	sandbox   *sandbox.Manager
-	sbRoot    string
-	registry  *tool.Registry
-	executor  *tool.Executor
-	recorder  HookRecorder
-	hooks     *corehooks.Executor
-	histories *historyStore
+	opts        Options
+	mode        ModeContext
+	settings    *config.Settings
+	cfg         *config.Settings
+	rulesLoader *config.RulesLoader
+	sandbox     *sandbox.Manager
+	sbRoot      string
+	registry    *tool.Registry
+	executor    *tool.Executor
+	recorder    HookRecorder
+	hooks       *corehooks.Executor
+	histories   *historyStore
 
 	cmdExec   *commands.Executor
 	skReg     *skills.Registry
@@ -132,24 +133,36 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	hooks := newHookExecutor(opts, recorder, settings)
 	compactor := newCompactor(opts.AutoCompact, opts.Model, opts.TokenLimit, hooks, recorder)
 
+	var rulesLoader *config.RulesLoader
+	if opts.RulesEnabled == nil || (opts.RulesEnabled != nil && *opts.RulesEnabled) {
+		rulesLoader = config.NewRulesLoader(opts.ProjectRoot)
+		if _, err := rulesLoader.LoadRules(); err != nil {
+			log.Printf("rules loader warning: %v", err)
+		}
+		if err := rulesLoader.WatchChanges(nil); err != nil {
+			log.Printf("rules watcher warning: %v", err)
+		}
+	}
+
 	rt := &Runtime{
-		opts:      opts,
-		mode:      mode,
-		settings:  settings,
-		cfg:       projectConfigFromSettings(settings),
-		sandbox:   sbox,
-		sbRoot:    sbRoot,
-		registry:  registry,
-		executor:  executor,
-		recorder:  recorder,
-		hooks:     hooks,
-		histories: newHistoryStore(opts.MaxSessions),
-		cmdExec:   cmdExec,
-		skReg:     skReg,
-		subMgr:    subMgr,
-		plugins:   plugins,
-		tokens:    newTokenTracker(opts.TokenTracking, opts.TokenCallback),
-		compactor: compactor,
+		opts:        opts,
+		mode:        mode,
+		settings:    settings,
+		cfg:         projectConfigFromSettings(settings),
+		rulesLoader: rulesLoader,
+		sandbox:     sbox,
+		sbRoot:      sbRoot,
+		registry:    registry,
+		executor:    executor,
+		recorder:    recorder,
+		hooks:       hooks,
+		histories:   newHistoryStore(opts.MaxSessions),
+		cmdExec:     cmdExec,
+		skReg:       skReg,
+		subMgr:      subMgr,
+		plugins:     plugins,
+		tokens:      newTokenTracker(opts.TokenTracking, opts.TokenCallback),
+		compactor:   compactor,
 	}
 
 	if taskTool != nil {
@@ -221,10 +234,16 @@ func (rt *Runtime) RunStream(ctx context.Context, req Request) (<-chan StreamEve
 
 // Close releases held resources.
 func (rt *Runtime) Close() error {
+	var err error
+	if rt.rulesLoader != nil {
+		if e := rt.rulesLoader.Close(); e != nil {
+			err = e
+		}
+	}
 	if rt.registry != nil {
 		rt.registry.Close()
 	}
-	return nil
+	return err
 }
 
 // Config returns the last loaded project config.
@@ -330,13 +349,30 @@ func (rt *Runtime) runAgent(prep preparedRun) (runResult, error) {
 }
 
 func (rt *Runtime) runAgentWithMiddleware(prep preparedRun, extras ...middleware.Middleware) (runResult, error) {
+	// Select model based on request tier or subagent mapping
+	selectedModel, selectedTier := rt.selectModelForSubagent(prep.normalized.TargetSubagent, prep.normalized.Model)
+
+	// Emit ModelSelected event if a non-default model was selected
+	if selectedTier != "" {
+		hookAdapter := &runtimeHookAdapter{executor: rt.hooks, recorder: rt.recorder}
+		// Best-effort event emission; errors are logged but don't block execution
+		if err := hookAdapter.ModelSelected(prep.ctx, coreevents.ModelSelectedPayload{
+			ToolName:  prep.normalized.TargetSubagent,
+			ModelTier: string(selectedTier),
+			Reason:    "subagent model mapping",
+		}); err != nil {
+			log.Printf("api: failed to emit ModelSelected event: %v", err)
+		}
+	}
+
 	modelAdapter := &conversationModel{
-		base:         rt.mustModel(),
+		base:         selectedModel,
 		history:      prep.history,
 		prompt:       prep.prompt,
 		trimmer:      rt.newTrimmer(),
 		tools:        availableTools(rt.registry, prep.toolWhitelist),
 		systemPrompt: rt.opts.SystemPrompt,
+		rulesLoader:  rt.rulesLoader,
 		hooks:        &runtimeHookAdapter{executor: rt.hooks, recorder: rt.recorder},
 		compactor:    rt.compactor,
 		sessionID:    prep.normalized.SessionID,
@@ -674,11 +710,34 @@ func convertTaskToolResult(res subagents.Result) *tool.ToolResult {
 	}
 }
 
-func (rt *Runtime) mustModel() model.Model {
+// selectModelForSubagent returns the appropriate model for the given subagent type.
+// Priority: 1) Request.Model override, 2) SubagentModelMapping, 3) default Model.
+// Returns the selected model and the tier used (empty string if default).
+func (rt *Runtime) selectModelForSubagent(subagentType string, requestTier ModelTier) (model.Model, ModelTier) {
 	rt.mu.RLock()
-	mdl := rt.opts.Model
-	rt.mu.RUnlock()
-	return mdl
+	defer rt.mu.RUnlock()
+
+	// Priority 1: Request-level override (方案 C)
+	if requestTier != "" {
+		if m, ok := rt.opts.ModelPool[requestTier]; ok && m != nil {
+			return m, requestTier
+		}
+	}
+
+	// Priority 2: Subagent type mapping (方案 A)
+	if rt.opts.SubagentModelMapping != nil {
+		canonical := strings.ToLower(strings.TrimSpace(subagentType))
+		if tier, ok := rt.opts.SubagentModelMapping[canonical]; ok {
+			if rt.opts.ModelPool != nil {
+				if m, ok := rt.opts.ModelPool[tier]; ok && m != nil {
+					return m, tier
+				}
+			}
+		}
+	}
+
+	// Priority 3: Default model
+	return rt.opts.Model, ""
 }
 
 func (rt *Runtime) newTrimmer() *message.Trimmer {
@@ -697,6 +756,7 @@ type conversationModel struct {
 	trimmer      *message.Trimmer
 	tools        []model.ToolDefinition
 	systemPrompt string
+	rulesLoader  *config.RulesLoader
 	usage        model.Usage
 	stopReason   string
 	hooks        *runtimeHookAdapter
@@ -727,10 +787,16 @@ func (m *conversationModel) Generate(ctx context.Context, _ *agent.Context) (*ag
 	if m.trimmer != nil {
 		snapshot = m.trimmer.Trim(snapshot)
 	}
+	systemPrompt := m.systemPrompt
+	if m.rulesLoader != nil {
+		if rules := m.rulesLoader.GetContent(); rules != "" {
+			systemPrompt = fmt.Sprintf("%s\n\n## Project Rules\n\n%s", systemPrompt, rules)
+		}
+	}
 	req := model.Request{
 		Messages:    convertMessages(snapshot),
 		Tools:       m.tools,
-		System:      m.systemPrompt,
+		System:      systemPrompt,
 		MaxTokens:   0,
 		Model:       "",
 		Temperature: nil,
@@ -828,8 +894,10 @@ func (t *runtimeToolExecutor) Execute(ctx context.Context, call agent.ToolCall, 
 	if !t.isAllowed(ctx, call.Name) {
 		return agent.ToolResult{}, fmt.Errorf("tool %s is not whitelisted", call.Name)
 	}
-	if err := t.hooks.PreToolUse(ctx, coreToolUsePayload(call)); err != nil {
+	if params, err := t.hooks.PreToolUse(ctx, coreToolUsePayload(call)); err != nil {
 		return agent.ToolResult{}, err
+	} else if params != nil {
+		call.Input = params
 	}
 
 	callSpec := tool.Call{

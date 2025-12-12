@@ -161,6 +161,11 @@ func validateHooksConfig(h *HooksConfig) []error {
 	var errs []error
 	errs = append(errs, validateHookMap("hooks.preToolUse", h.PreToolUse)...)
 	errs = append(errs, validateHookMap("hooks.postToolUse", h.PostToolUse)...)
+	errs = append(errs, validateHookMap("hooks.permissionRequest", h.PermissionRequest)...)
+	errs = append(errs, validateHookMap("hooks.sessionStart", h.SessionStart)...)
+	errs = append(errs, validateHookMap("hooks.sessionEnd", h.SessionEnd)...)
+	errs = append(errs, validateHookMap("hooks.subagentStart", h.SubagentStart)...)
+	errs = append(errs, validateHookMap("hooks.subagentStop", h.SubagentStop)...)
 	return errs
 }
 
