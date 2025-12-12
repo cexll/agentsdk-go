@@ -479,7 +479,7 @@ func (h *runtimeHookAdapter) Stop(ctx context.Context, reason string) error {
 
 func (h *runtimeHookAdapter) PermissionRequest(ctx context.Context, evt coreevents.PermissionRequestPayload) (coreevents.PermissionDecisionType, error) {
 	if h == nil || h.executor == nil {
-		return coreevents.PermissionAllow, nil
+		return coreevents.PermissionAsk, nil
 	}
 	results, err := h.executor.Execute(ctx, coreevents.Event{Type: coreevents.PermissionRequest, Payload: evt})
 	if err != nil {
