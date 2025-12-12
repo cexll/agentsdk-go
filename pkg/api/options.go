@@ -136,12 +136,13 @@ type Options struct {
 	Model        model.Model
 	ModelFactory ModelFactory
 
-	// ModelPool maps tier names to model instances for cost optimization.
-	// Keys are typically "low", "mid", "high" corresponding to ModelTier constants.
-	ModelPool map[string]model.Model
-	// ToolModelMapping maps tool names to tier names for tool-level model binding.
-	// Tools not in this map use the default Model.
-	ToolModelMapping map[string]string
+	// ModelPool maps tiers to model instances for cost optimization.
+	// Use ModelTier constants (ModelTierLow, ModelTierMid, ModelTierHigh) as keys.
+	ModelPool map[ModelTier]model.Model
+	// SubagentModelMapping maps subagent type names to model tiers.
+	// Keys should be lowercase subagent types: "general-purpose", "explore", "plan".
+	// Subagents not in this map use the default Model.
+	SubagentModelMapping map[string]ModelTier
 
 	SystemPrompt string
 	RulesEnabled *bool // nil = 默认启用，false = 禁用
@@ -193,6 +194,7 @@ type Request struct {
 	Prompt         string
 	Mode           ModeContext
 	SessionID      string
+	Model          ModelTier // Optional: override model tier for this request
 	Traits         []string
 	Tags           map[string]string
 	Channels       []string
@@ -394,8 +396,8 @@ func cloneStrings(in []string) []string {
 	return slices.Compact(out)
 }
 
-// WithModelPool configures a pool of models indexed by tier name.
-func WithModelPool(pool map[string]model.Model) func(*Options) {
+// WithModelPool configures a pool of models indexed by tier.
+func WithModelPool(pool map[ModelTier]model.Model) func(*Options) {
 	return func(o *Options) {
 		if pool != nil {
 			o.ModelPool = pool
@@ -403,11 +405,12 @@ func WithModelPool(pool map[string]model.Model) func(*Options) {
 	}
 }
 
-// WithToolModelMapping configures tool-to-tier mappings for model selection.
-func WithToolModelMapping(mapping map[string]string) func(*Options) {
+// WithSubagentModelMapping configures subagent-type-to-tier mappings for model selection.
+// Keys should be lowercase subagent type names (e.g., "explore", "plan").
+func WithSubagentModelMapping(mapping map[string]ModelTier) func(*Options) {
 	return func(o *Options) {
 		if mapping != nil {
-			o.ToolModelMapping = mapping
+			o.SubagentModelMapping = mapping
 		}
 	}
 }
@@ -578,6 +581,17 @@ func (h *runtimeHookAdapter) SubagentStop(ctx context.Context, evt coreevents.Su
 		return err
 	}
 	h.record(coreevents.Event{Type: coreevents.SubagentStop, Payload: evt})
+	return nil
+}
+
+func (h *runtimeHookAdapter) ModelSelected(ctx context.Context, evt coreevents.ModelSelectedPayload) error {
+	if h == nil || h.executor == nil {
+		return nil
+	}
+	if err := h.executor.Publish(coreevents.Event{Type: coreevents.ModelSelected, Payload: evt}); err != nil {
+		return err
+	}
+	h.record(coreevents.Event{Type: coreevents.ModelSelected, Payload: evt})
 	return nil
 }
 

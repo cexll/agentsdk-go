@@ -1,13 +1,14 @@
 # Multi-Model Example
 
 This example demonstrates multi-model support, allowing you to configure
-different models for different tools to optimize costs.
+different models for different subagent types to optimize costs.
 
 ## Features
 
 - **Model Pool**: Configure multiple models indexed by tier (`low`/`mid`/`high`).
-- **Tool-Model Mapping**: Bind specific tools to specific model tiers.
-- **Automatic Fallback**: Tools not in the mapping use the default model.
+- **Subagent-Model Mapping**: Bind specific subagent types to specific model tiers.
+- **Request-Level Override**: Override model tier for individual requests.
+- **Automatic Fallback**: Subagents not in the mapping use the default model.
 
 ## Configuration
 
@@ -21,15 +22,15 @@ sonnet, _ := sonnetProvider.Model(ctx)
 rt, _ := api.New(ctx, api.Options{
     Model: sonnet, // default model
 
-    ModelPool: map[string]model.Model{
-        string(api.ModelTierLow):  haiku,
-        string(api.ModelTierMid):  sonnet,
-        string(api.ModelTierHigh): sonnet, // placeholder for opus
+    ModelPool: map[api.ModelTier]model.Model{
+        api.ModelTierLow:  haiku,
+        api.ModelTierMid:  sonnet,
+        api.ModelTierHigh: sonnet, // placeholder for opus
     },
 
-    ToolModelMapping: map[string]string{
-        "Grep": string(api.ModelTierLow),  // use Haiku for grep
-        "Task": string(api.ModelTierHigh), // use Opus/high for task
+    SubagentModelMapping: map[string]api.ModelTier{
+        "explore": api.ModelTierLow,  // use Haiku for exploration
+        "plan":    api.ModelTierHigh, // use Opus for planning
     },
 })
 ```
@@ -43,11 +44,25 @@ go run ./examples/05-multimodel
 
 ## Cost Optimization Strategy
 
-| Tool Type | Recommended Tier | Rationale |
-|-----------|------------------|-----------|
-| Grep, Glob | low | Simple pattern matching |
-| Read | low | Just reading content |
-| Bash | mid | May need understanding |
-| Write, Edit | mid | Needs accuracy |
-| Task (subagent) | high | Complex reasoning |
+| Subagent Type | Recommended Tier | Rationale |
+|---------------|------------------|-----------|
+| explore | low | Fast exploration, simple pattern matching |
+| plan | mid/high | Needs good reasoning for planning |
+| general-purpose | high | Complex reasoning tasks |
 
+## Request-Level Override
+
+You can override the model tier for individual requests:
+
+```go
+resp, err := rt.Run(ctx, api.Request{
+    Prompt:    "Simple question",
+    SessionID: "demo",
+    Model:     api.ModelTierLow, // Force use of low-tier model
+})
+```
+
+Priority order:
+1. `Request.Model` (explicit override)
+2. `SubagentModelMapping` (subagent type mapping)
+3. `Options.Model` (default model)

@@ -328,8 +328,24 @@ func (rt *Runtime) runAgent(prep preparedRun) (runResult, error) {
 }
 
 func (rt *Runtime) runAgentWithMiddleware(prep preparedRun, extras ...middleware.Middleware) (runResult, error) {
+	// Select model based on request tier or subagent mapping
+	selectedModel, selectedTier := rt.selectModelForSubagent(prep.normalized.TargetSubagent, prep.normalized.Model)
+
+	// Emit ModelSelected event if a non-default model was selected
+	if selectedTier != "" {
+		hookAdapter := &runtimeHookAdapter{executor: rt.hooks, recorder: rt.recorder}
+		// Best-effort event emission; errors are logged but don't block execution
+		if err := hookAdapter.ModelSelected(prep.ctx, coreevents.ModelSelectedPayload{
+			ToolName:  prep.normalized.TargetSubagent,
+			ModelTier: string(selectedTier),
+			Reason:    "subagent model mapping",
+		}); err != nil {
+			log.Printf("api: failed to emit ModelSelected event: %v", err)
+		}
+	}
+
 	modelAdapter := &conversationModel{
-		base:         rt.mustModel(),
+		base:         selectedModel,
 		history:      prep.history,
 		prompt:       prep.prompt,
 		trimmer:      rt.newTrimmer(),
@@ -642,28 +658,33 @@ func convertTaskToolResult(res subagents.Result) *tool.ToolResult {
 	}
 }
 
-func (rt *Runtime) mustModel() model.Model {
-	rt.mu.RLock()
-	mdl := rt.opts.Model
-	rt.mu.RUnlock()
-	return mdl
-}
-
-// selectModelForTool returns the appropriate model for the given tool name.
-// It checks ToolModelMapping first, then ModelPool, falling back to the default model.
-func (rt *Runtime) selectModelForTool(toolName string) (model.Model, string) {
+// selectModelForSubagent returns the appropriate model for the given subagent type.
+// Priority: 1) Request.Model override, 2) SubagentModelMapping, 3) default Model.
+// Returns the selected model and the tier used (empty string if default).
+func (rt *Runtime) selectModelForSubagent(subagentType string, requestTier ModelTier) (model.Model, ModelTier) {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 
-	if rt.opts.ToolModelMapping != nil {
-		if tier, ok := rt.opts.ToolModelMapping[toolName]; ok {
+	// Priority 1: Request-level override (方案 C)
+	if requestTier != "" {
+		if m, ok := rt.opts.ModelPool[requestTier]; ok && m != nil {
+			return m, requestTier
+		}
+	}
+
+	// Priority 2: Subagent type mapping (方案 A)
+	if rt.opts.SubagentModelMapping != nil {
+		canonical := strings.ToLower(strings.TrimSpace(subagentType))
+		if tier, ok := rt.opts.SubagentModelMapping[canonical]; ok {
 			if rt.opts.ModelPool != nil {
-				if m, ok := rt.opts.ModelPool[tier]; ok {
+				if m, ok := rt.opts.ModelPool[tier]; ok && m != nil {
 					return m, tier
 				}
 			}
 		}
 	}
+
+	// Priority 3: Default model
 	return rt.opts.Model, ""
 }
 

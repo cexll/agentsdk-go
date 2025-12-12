@@ -376,6 +376,8 @@ func buildPayload(evt events.Event) ([]byte, error) {
 		envelope["user_prompt"] = p
 	case events.StopPayload:
 		envelope["stop"] = p
+	case events.ModelSelectedPayload:
+		envelope["model_selected"] = p
 	case nil:
 		// allowed
 	default:
@@ -445,7 +447,7 @@ func validateEvent(t events.EventType) error {
 	case events.PreToolUse, events.PostToolUse, events.Notification, events.UserPromptSubmit,
 		events.SessionStart, events.SessionEnd, events.Stop,
 		events.SubagentStart, events.SubagentStop,
-		events.PermissionRequest:
+		events.PermissionRequest, events.ModelSelected:
 		return nil
 	default:
 		return fmt.Errorf("hooks: unsupported event %s", t)

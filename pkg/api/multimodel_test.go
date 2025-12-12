@@ -42,9 +42,9 @@ func TestModelTierConstants(t *testing.T) {
 func TestWithModelPool(t *testing.T) {
 	haiku := &mockModel{name: "haiku"}
 	sonnet := &mockModel{name: "sonnet"}
-	pool := map[string]model.Model{
-		"low": haiku,
-		"mid": sonnet,
+	pool := map[ModelTier]model.Model{
+		ModelTierLow: haiku,
+		ModelTierMid: sonnet,
 	}
 
 	opts := &Options{}
@@ -53,45 +53,45 @@ func TestWithModelPool(t *testing.T) {
 	if len(opts.ModelPool) != 2 {
 		t.Errorf("ModelPool length = %d, want 2", len(opts.ModelPool))
 	}
-	if opts.ModelPool["low"] != haiku {
-		t.Error("ModelPool[\"low\"] not set correctly")
+	if opts.ModelPool[ModelTierLow] != haiku {
+		t.Error("ModelPool[ModelTierLow] not set correctly")
 	}
 }
 
 func TestWithModelPoolNil(t *testing.T) {
-	opts := &Options{ModelPool: map[string]model.Model{"existing": &mockModel{}}}
+	opts := &Options{ModelPool: map[ModelTier]model.Model{ModelTierLow: &mockModel{}}}
 	WithModelPool(nil)(opts)
 	if opts.ModelPool == nil {
 		t.Error("WithModelPool(nil) should not clear existing pool")
 	}
 }
 
-func TestWithToolModelMapping(t *testing.T) {
-	mapping := map[string]string{
-		"grep": "low",
-		"task": "high",
+func TestWithSubagentModelMapping(t *testing.T) {
+	mapping := map[string]ModelTier{
+		"explore": ModelTierLow,
+		"plan":    ModelTierHigh,
 	}
 
 	opts := &Options{}
-	WithToolModelMapping(mapping)(opts)
+	WithSubagentModelMapping(mapping)(opts)
 
-	if len(opts.ToolModelMapping) != 2 {
-		t.Errorf("ToolModelMapping length = %d, want 2", len(opts.ToolModelMapping))
+	if len(opts.SubagentModelMapping) != 2 {
+		t.Errorf("SubagentModelMapping length = %d, want 2", len(opts.SubagentModelMapping))
 	}
-	if opts.ToolModelMapping["grep"] != "low" {
-		t.Error("ToolModelMapping[\"grep\"] not set correctly")
-	}
-}
-
-func TestWithToolModelMappingNil(t *testing.T) {
-	opts := &Options{ToolModelMapping: map[string]string{"existing": "low"}}
-	WithToolModelMapping(nil)(opts)
-	if opts.ToolModelMapping == nil {
-		t.Error("WithToolModelMapping(nil) should not clear existing mapping")
+	if opts.SubagentModelMapping["explore"] != ModelTierLow {
+		t.Error("SubagentModelMapping[\"explore\"] not set correctly")
 	}
 }
 
-func TestSelectModelForTool(t *testing.T) {
+func TestWithSubagentModelMappingNil(t *testing.T) {
+	opts := &Options{SubagentModelMapping: map[string]ModelTier{"existing": ModelTierLow}}
+	WithSubagentModelMapping(nil)(opts)
+	if opts.SubagentModelMapping == nil {
+		t.Error("WithSubagentModelMapping(nil) should not clear existing mapping")
+	}
+}
+
+func TestSelectModelForSubagent(t *testing.T) {
 	defaultModel := &mockModel{name: "default"}
 	haiku := &mockModel{name: "haiku"}
 	opus := &mockModel{name: "opus"}
@@ -99,106 +99,142 @@ func TestSelectModelForTool(t *testing.T) {
 	rt := &Runtime{
 		opts: Options{
 			Model: defaultModel,
-			ModelPool: map[string]model.Model{
-				"low":  haiku,
-				"high": opus,
+			ModelPool: map[ModelTier]model.Model{
+				ModelTierLow:  haiku,
+				ModelTierHigh: opus,
 			},
-			ToolModelMapping: map[string]string{
-				"grep": "low",
-				"task": "high",
+			SubagentModelMapping: map[string]ModelTier{
+				"explore": ModelTierLow,
+				"plan":    ModelTierHigh,
 			},
 		},
 	}
 
 	tests := []struct {
-		toolName     string
+		subagentType string
+		requestTier  ModelTier
 		expectedName string
-		expectedTier string
+		expectedTier ModelTier
 	}{
-		{"grep", "haiku", "low"},
-		{"task", "opus", "high"},
-		{"bash", "default", ""},    // Not in mapping, use default
-		{"unknown", "default", ""}, // Unknown tool, use default
+		{"explore", "", "haiku", ModelTierLow},
+		{"plan", "", "opus", ModelTierHigh},
+		{"general-purpose", "", "default", ""},            // Not in mapping, use default
+		{"unknown", "", "default", ""},                    // Unknown subagent, use default
+		{"explore", ModelTierHigh, "opus", ModelTierHigh}, // Request tier overrides mapping
+		{"", ModelTierLow, "haiku", ModelTierLow},         // Request tier without subagent
 	}
 
 	for _, tt := range tests {
-		mdl, tier := rt.selectModelForTool(tt.toolName)
+		mdl, tier := rt.selectModelForSubagent(tt.subagentType, tt.requestTier)
 		mock, ok := mdl.(*mockModel)
 		if !ok {
-			t.Fatalf("selectModelForTool(%q) returned non-mockModel type", tt.toolName)
+			t.Fatalf("selectModelForSubagent(%q, %q) returned non-mockModel type", tt.subagentType, tt.requestTier)
 		}
 		if mock.name != tt.expectedName {
-			t.Errorf("selectModelForTool(%q) model = %q, want %q", tt.toolName, mock.name, tt.expectedName)
+			t.Errorf("selectModelForSubagent(%q, %q) model = %q, want %q", tt.subagentType, tt.requestTier, mock.name, tt.expectedName)
 		}
 		if tier != tt.expectedTier {
-			t.Errorf("selectModelForTool(%q) tier = %q, want %q", tt.toolName, tier, tt.expectedTier)
+			t.Errorf("selectModelForSubagent(%q, %q) tier = %q, want %q", tt.subagentType, tt.requestTier, tier, tt.expectedTier)
 		}
 	}
 }
 
-func TestSelectModelForToolNoPool(t *testing.T) {
+func TestSelectModelForSubagentCaseInsensitive(t *testing.T) {
+	defaultModel := &mockModel{name: "default"}
+	haiku := &mockModel{name: "haiku"}
+
+	rt := &Runtime{
+		opts: Options{
+			Model: defaultModel,
+			ModelPool: map[ModelTier]model.Model{
+				ModelTierLow: haiku,
+			},
+			SubagentModelMapping: map[string]ModelTier{
+				"explore": ModelTierLow,
+			},
+		},
+	}
+
+	// Test case insensitivity
+	tests := []string{"explore", "EXPLORE", "Explore", "  explore  "}
+	for _, input := range tests {
+		mdl, tier := rt.selectModelForSubagent(input, "")
+		mock, ok := mdl.(*mockModel)
+		if !ok {
+			t.Fatalf("selectModelForSubagent(%q) returned non-mockModel type", input)
+		}
+		if mock.name != "haiku" {
+			t.Errorf("selectModelForSubagent(%q) model = %q, want haiku (case insensitive)", input, mock.name)
+		}
+		if tier != ModelTierLow {
+			t.Errorf("selectModelForSubagent(%q) tier = %q, want low", input, tier)
+		}
+	}
+}
+
+func TestSelectModelForSubagentNoPool(t *testing.T) {
 	defaultModel := &mockModel{name: "default"}
 
 	rt := &Runtime{
 		opts: Options{
 			Model: defaultModel,
-			ToolModelMapping: map[string]string{
-				"grep": "low",
+			SubagentModelMapping: map[string]ModelTier{
+				"explore": ModelTierLow,
 			},
 		},
 	}
 
-	mdl, tier := rt.selectModelForTool("grep")
+	mdl, tier := rt.selectModelForSubagent("explore", "")
 	mock, ok := mdl.(*mockModel)
 	if !ok {
-		t.Fatal("selectModelForTool returned non-mockModel type")
+		t.Fatal("selectModelForSubagent returned non-mockModel type")
 	}
 	if mock.name != "default" {
-		t.Errorf("selectModelForTool with no pool = %q, want default", mock.name)
+		t.Errorf("selectModelForSubagent with no pool = %q, want default", mock.name)
 	}
 	if tier != "" {
 		t.Errorf("tier should be empty when pool is nil, got %q", tier)
 	}
 }
 
-func TestSelectModelForToolNoMapping(t *testing.T) {
+func TestSelectModelForSubagentNoMapping(t *testing.T) {
 	defaultModel := &mockModel{name: "default"}
 	haiku := &mockModel{name: "haiku"}
 
 	rt := &Runtime{
 		opts: Options{
 			Model: defaultModel,
-			ModelPool: map[string]model.Model{
-				"low": haiku,
+			ModelPool: map[ModelTier]model.Model{
+				ModelTierLow: haiku,
 			},
 		},
 	}
 
-	mdl, tier := rt.selectModelForTool("grep")
+	mdl, tier := rt.selectModelForSubagent("explore", "")
 	mock, ok := mdl.(*mockModel)
 	if !ok {
-		t.Fatal("selectModelForTool returned non-mockModel type")
+		t.Fatal("selectModelForSubagent returned non-mockModel type")
 	}
 	if mock.name != "default" {
-		t.Errorf("selectModelForTool with no mapping = %q, want default", mock.name)
+		t.Errorf("selectModelForSubagent with no mapping = %q, want default", mock.name)
 	}
 	if tier != "" {
 		t.Errorf("tier should be empty when mapping is nil, got %q", tier)
 	}
 }
 
-func TestSelectModelForToolConcurrent(t *testing.T) {
+func TestSelectModelForSubagentConcurrent(t *testing.T) {
 	defaultModel := &mockModel{name: "default"}
 	haiku := &mockModel{name: "haiku"}
 
 	rt := &Runtime{
 		opts: Options{
 			Model: defaultModel,
-			ModelPool: map[string]model.Model{
-				"low": haiku,
+			ModelPool: map[ModelTier]model.Model{
+				ModelTierLow: haiku,
 			},
-			ToolModelMapping: map[string]string{
-				"grep": "low",
+			SubagentModelMapping: map[string]ModelTier{
+				"explore": ModelTierLow,
 			},
 		},
 	}
@@ -208,9 +244,22 @@ func TestSelectModelForToolConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			rt.selectModelForTool("grep")
-			rt.selectModelForTool("bash")
+			rt.selectModelForSubagent("explore", "")
+			rt.selectModelForSubagent("plan", "")
+			rt.selectModelForSubagent("", ModelTierLow)
 		}()
 	}
 	wg.Wait()
+}
+
+func TestRequestModelTierOverride(t *testing.T) {
+	// Test that Request.Model field can override model selection
+	req := Request{
+		Prompt: "test",
+		Model:  ModelTierHigh,
+	}
+
+	if req.Model != ModelTierHigh {
+		t.Errorf("Request.Model = %q, want %q", req.Model, ModelTierHigh)
+	}
 }

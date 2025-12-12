@@ -1,6 +1,6 @@
-// Package main demonstrates multi-model support with tool-level model binding.
-// This example shows how to configure different models for different tools
-// to optimize costs (e.g., use cheaper models for simple tasks).
+// Package main demonstrates multi-model support with subagent-level model binding.
+// This example shows how to configure different models for different subagent types
+// to optimize costs (e.g., use cheaper models for exploration tasks).
 package main
 
 import (
@@ -61,26 +61,22 @@ func main() {
 	// Configure runtime with multi-model support.
 	rt, err := api.New(ctx, api.Options{
 		ProjectRoot: ".",
-		Model:       sonnet, // Default model.
+		Model:       sonnet, // Default model for main agent loop.
 
 		// Model pool for cost optimization.
-		ModelPool: map[string]modelpkg.Model{
-			string(api.ModelTierLow):  haiku,
-			string(api.ModelTierMid):  sonnet,
-			string(api.ModelTierHigh): opus,
+		// Maps tier constants to actual model instances.
+		ModelPool: map[api.ModelTier]modelpkg.Model{
+			api.ModelTierLow:  haiku,
+			api.ModelTierMid:  sonnet,
+			api.ModelTierHigh: opus,
 		},
 
-		// Tool-to-model mapping. Tool names must match the registered tool Name().
-		ToolModelMapping: map[string]string{
-			"Grep": string(api.ModelTierLow),
-			"Glob": string(api.ModelTierLow),
-			"Read": string(api.ModelTierLow),
-
-			"Bash":  string(api.ModelTierMid),
-			"Write": string(api.ModelTierMid),
-			"Edit":  string(api.ModelTierMid),
-
-			"Task": string(api.ModelTierHigh),
+		// Subagent type to model tier mapping.
+		// Keys should be lowercase subagent type names.
+		SubagentModelMapping: map[string]api.ModelTier{
+			"explore":         api.ModelTierLow,  // Use Haiku for fast exploration
+			"plan":            api.ModelTierMid,  // Use Sonnet for planning
+			"general-purpose": api.ModelTierHigh, // Use Opus for complex reasoning
 		},
 
 		MaxIterations: 10,
@@ -96,12 +92,13 @@ func main() {
 	fmt.Println("  - low:  claude-3-5-haiku (fast, cheap)")
 	fmt.Println("  - mid:  claude-sonnet-4 (balanced)")
 	fmt.Println("  - high: claude-sonnet-4 (powerful placeholder)")
-	fmt.Println("\nTool Mappings:")
-	fmt.Println("  - Grep, Glob, Read -> low (Haiku)")
-	fmt.Println("  - Bash, Write, Edit -> mid (Sonnet)")
-	fmt.Println("  - Task -> high (Opus/placeholder)")
-	fmt.Println("\nTools not in mapping use the default model (Sonnet).")
+	fmt.Println("\nSubagent Mappings:")
+	fmt.Println("  - explore -> low (Haiku)")
+	fmt.Println("  - plan -> mid (Sonnet)")
+	fmt.Println("  - general-purpose -> high (Opus/placeholder)")
+	fmt.Println("\nSubagents not in mapping use the default model (Sonnet).")
 
+	// Example 1: Normal request uses default model
 	resp, err := rt.Run(ctx, api.Request{
 		Prompt:    "List the files in the current directory.",
 		SessionID: "multimodel-demo",
@@ -110,8 +107,23 @@ func main() {
 		log.Fatalf("failed to run: %v", err)
 	}
 
-	fmt.Println("\n--- Response ---")
+	fmt.Println("\n--- Response (default model) ---")
 	if resp.Result != nil {
 		fmt.Println(resp.Result.Output)
+	}
+
+	// Example 2: Request with explicit model tier override
+	resp2, err := rt.Run(ctx, api.Request{
+		Prompt:    "What is 2+2?",
+		SessionID: "multimodel-demo-override",
+		Model:     api.ModelTierLow, // Force use of Haiku for this simple task
+	})
+	if err != nil {
+		log.Fatalf("failed to run with override: %v", err)
+	}
+
+	fmt.Println("\n--- Response (low tier override) ---")
+	if resp2.Result != nil {
+		fmt.Println(resp2.Result.Output)
 	}
 }
