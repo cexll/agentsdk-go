@@ -490,8 +490,21 @@ func TestDecisionStringer(t *testing.T) {
 func writeScript(t *testing.T, dir, name, content string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatalf("create script: %v", err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
 		t.Fatalf("write script: %v", err)
+	}
+	// Sync to avoid "Text file busy" race condition in CI
+	if err := f.Sync(); err != nil {
+		f.Close()
+		t.Fatalf("sync script: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close script: %v", err)
 	}
 	if err := os.Chmod(path, 0o700); err != nil {
 		t.Fatalf("chmod script: %v", err)
