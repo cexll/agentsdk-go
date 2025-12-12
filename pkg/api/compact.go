@@ -181,7 +181,8 @@ func (c *compactor) postCompact(sessionID string, res compactResult) {
 		Payload:   payload,
 	}
 	if c.hooks != nil {
-		_ = c.hooks.Publish(evt)
+		//nolint:errcheck // context compacted events are non-critical notifications
+		c.hooks.Publish(evt)
 	}
 	c.record(evt)
 }

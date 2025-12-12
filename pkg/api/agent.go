@@ -396,7 +396,8 @@ func (rt *Runtime) runAgentWithMiddleware(prep preparedRun, extras ...middleware
 			RequestID:     stats.RequestID,
 		}
 		if rt.hooks != nil {
-			_ = rt.hooks.Publish(coreevents.Event{
+			//nolint:errcheck // token usage events are non-critical notifications
+			rt.hooks.Publish(coreevents.Event{
 				Type:      coreevents.TokenUsage,
 				SessionID: stats.SessionID,
 				Payload:   payload,

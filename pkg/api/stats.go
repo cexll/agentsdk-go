@@ -218,14 +218,14 @@ func copySessionStats(s *SessionTokenStats) *SessionTokenStats {
 // tokenStatsFromUsage converts model.Usage to TokenStats.
 func tokenStatsFromUsage(usage model.Usage, modelName, sessionID, requestID string) TokenStats {
 	return TokenStats{
-		InputTokens:  int64(usage.InputTokens),
-		OutputTokens: int64(usage.OutputTokens),
-		TotalTokens:  int64(usage.TotalTokens),
+		InputTokens:   int64(usage.InputTokens),
+		OutputTokens:  int64(usage.OutputTokens),
+		TotalTokens:   int64(usage.TotalTokens),
 		CacheCreation: int64(usage.CacheCreationTokens),
-		CacheRead:    int64(usage.CacheReadTokens),
-		Model:        modelName,
-		SessionID:    sessionID,
-		RequestID:    requestID,
-		Timestamp:    time.Now().UTC(),
+		CacheRead:     int64(usage.CacheReadTokens),
+		Model:         modelName,
+		SessionID:     sessionID,
+		RequestID:     requestID,
+		Timestamp:     time.Now().UTC(),
 	}
 }

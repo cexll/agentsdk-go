@@ -209,4 +209,3 @@ func TestTokenTracker_NilReceiver(t *testing.T) {
 		t.Fatalf("expected disabled for nil receiver")
 	}
 }
-
