@@ -526,15 +526,7 @@ Register before runtime creation via config or programmatically.
 
 ## Known Issues
 
-### Middleware Error Handling in Tool Loops
-
-**Issue**: If `AfterTool` middleware returns an error during multi-tool execution, the loop breaks early and only partial tool results are appended to history, causing a 400 error on the next iteration.
-
-**Location**: `pkg/agent/agent.go:152-179`
-
-**Scenario**: When the assistant returns multiple tool_use blocks (e.g., Read + Glob), if AfterTool middleware fails for tool #2, tool #1's result is recorded but tool #2's is lost. The next model call sees mismatched tool_use/tool_result counts.
-
-**Workaround**: Ensure `AfterTool` middleware logs errors but returns `nil` to allow all tool results to be processed. Alternatively, handle errors outside the tool execution loop.
+No known issues.
 
 ## Testing Strategy
 

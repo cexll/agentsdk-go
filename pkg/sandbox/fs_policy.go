@@ -70,11 +70,12 @@ func (p *FileSystemAllowList) Validate(path string) error {
 	if trimmed == "" {
 		return fmt.Errorf("%w: empty path", ErrPathDenied)
 	}
-	if p.resolver == nil {
-		p.resolver = security.NewPathResolver()
+	resolver := p.resolver
+	if resolver == nil {
+		resolver = security.NewPathResolver()
 	}
 
-	resolved, err := p.resolver.Resolve(trimmed)
+	resolved, err := resolver.Resolve(trimmed)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "symlink") {
 			return fmt.Errorf("%w: %w", ErrSymlinkDetected, err)

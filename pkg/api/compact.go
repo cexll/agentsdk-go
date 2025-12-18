@@ -52,15 +52,14 @@ func (c CompactConfig) withDefaults() CompactConfig {
 }
 
 type compactor struct {
-	cfg      CompactConfig
-	model    model.Model
-	limit    int
-	hooks    *corehooks.Executor
-	recorder HookRecorder
-	mu       sync.Mutex
+	cfg   CompactConfig
+	model model.Model
+	limit int
+	hooks *corehooks.Executor
+	mu    sync.Mutex
 }
 
-func newCompactor(cfg CompactConfig, mdl model.Model, tokenLimit int, hooks *corehooks.Executor, recorder HookRecorder) *compactor {
+func newCompactor(cfg CompactConfig, mdl model.Model, tokenLimit int, hooks *corehooks.Executor) *compactor {
 	cfg = cfg.withDefaults()
 	if !cfg.Enabled {
 		return nil
@@ -70,11 +69,10 @@ func newCompactor(cfg CompactConfig, mdl model.Model, tokenLimit int, hooks *cor
 		limit = defaultClaudeContextLimit
 	}
 	return &compactor{
-		cfg:      cfg,
-		model:    mdl,
-		limit:    limit,
-		hooks:    hooks,
-		recorder: recorder,
+		cfg:   cfg,
+		model: mdl,
+		limit: limit,
+		hooks: hooks,
 	}
 }
 
@@ -110,7 +108,7 @@ type compactResult struct {
 	tokensAfter   int
 }
 
-func (c *compactor) maybeCompact(ctx context.Context, hist *message.History, sessionID string) (compactResult, bool, error) {
+func (c *compactor) maybeCompact(ctx context.Context, hist *message.History, sessionID string, recorder *hookRecorder) (compactResult, bool, error) {
 	if c == nil || hist == nil || !c.cfg.Enabled {
 		return compactResult{}, false, nil
 	}
@@ -128,7 +126,7 @@ func (c *compactor) maybeCompact(ctx context.Context, hist *message.History, ses
 		Threshold:       c.cfg.Threshold,
 		PreserveCount:   c.cfg.PreserveCount,
 	}
-	allow, err := c.preCompact(ctx, sessionID, payload)
+	allow, err := c.preCompact(ctx, sessionID, payload, recorder)
 	if err != nil {
 		return compactResult{}, false, err
 	}
@@ -140,22 +138,22 @@ func (c *compactor) maybeCompact(ctx context.Context, hist *message.History, ses
 	if err != nil {
 		return compactResult{}, false, err
 	}
-	c.postCompact(sessionID, res)
+	c.postCompact(sessionID, res, recorder)
 	return res, true, nil
 }
 
-func (c *compactor) preCompact(ctx context.Context, sessionID string, payload coreevents.PreCompactPayload) (bool, error) {
+func (c *compactor) preCompact(ctx context.Context, sessionID string, payload coreevents.PreCompactPayload, recorder *hookRecorder) (bool, error) {
 	evt := coreevents.Event{
 		Type:      coreevents.PreCompact,
 		SessionID: sessionID,
 		Payload:   payload,
 	}
 	if c.hooks == nil {
-		c.record(evt)
+		c.record(recorder, evt)
 		return true, nil
 	}
 	results, err := c.hooks.Execute(ctx, evt)
-	c.record(evt)
+	c.record(recorder, evt)
 	if err != nil {
 		return false, err
 	}
@@ -167,7 +165,7 @@ func (c *compactor) preCompact(ctx context.Context, sessionID string, payload co
 	return true, nil
 }
 
-func (c *compactor) postCompact(sessionID string, res compactResult) {
+func (c *compactor) postCompact(sessionID string, res compactResult, recorder *hookRecorder) {
 	payload := coreevents.ContextCompactedPayload{
 		Summary:               res.summary,
 		OriginalMessages:      res.originalMsgs,
@@ -184,14 +182,14 @@ func (c *compactor) postCompact(sessionID string, res compactResult) {
 		//nolint:errcheck // context compacted events are non-critical notifications
 		c.hooks.Publish(evt)
 	}
-	c.record(evt)
+	c.record(recorder, evt)
 }
 
-func (c *compactor) record(evt coreevents.Event) {
-	if c.recorder == nil {
+func (c *compactor) record(recorder *hookRecorder, evt coreevents.Event) {
+	if recorder == nil {
 		return
 	}
-	c.recorder.Record(evt)
+	recorder.Record(evt)
 }
 
 func (c *compactor) compact(ctx context.Context, hist *message.History, snapshot []message.Message) (compactResult, error) {

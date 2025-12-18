@@ -66,9 +66,12 @@ type Runtime struct {
 	sbRoot      string
 	registry    *tool.Registry
 	executor    *tool.Executor
+	// recorder is retained for backward compatibility.
+	// Deprecated: hook events are now recorded per-request via preparedRun.recorder.
 	recorder    HookRecorder
 	hooks       *corehooks.Executor
 	histories   *historyStore
+	sessionGate *sessionGate
 
 	cmdExec   *commands.Executor
 	skReg     *skills.Registry
@@ -79,11 +82,18 @@ type Runtime struct {
 	tracer    Tracer
 
 	mu sync.RWMutex
+
+	runMu     sync.Mutex
+	runWG     sync.WaitGroup
+	closeOnce sync.Once
+	closeErr  error
+	closed    bool
 }
 
 // New instantiates a unified runtime bound to the provided options.
 func New(ctx context.Context, opts Options) (*Runtime, error) {
 	opts = opts.withDefaults()
+	opts = opts.frozen()
 	mode := opts.modeContext()
 
 	settings, err := loadSettings(opts)
@@ -133,7 +143,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 
 	recorder := defaultHookRecorder()
 	hooks := newHookExecutor(opts, recorder, settings)
-	compactor := newCompactor(opts.AutoCompact, opts.Model, opts.TokenLimit, hooks, recorder)
+	compactor := newCompactor(opts.AutoCompact, opts.Model, opts.TokenLimit, hooks)
 
 	// Initialize tracer (noop without 'otel' build tag)
 	tracer, err := NewTracer(opts.OTEL)
@@ -173,6 +183,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		compactor:   compactor,
 		tracer:      tracer,
 	}
+	rt.sessionGate = newSessionGate()
 
 	if taskTool != nil {
 		taskTool.SetRunner(rt.taskRunner())
@@ -180,8 +191,41 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	return rt, nil
 }
 
+func (rt *Runtime) beginRun() error {
+	rt.runMu.Lock()
+	defer rt.runMu.Unlock()
+	if rt.closed {
+		return ErrRuntimeClosed
+	}
+	rt.runWG.Add(1)
+	return nil
+}
+
+func (rt *Runtime) endRun() {
+	rt.runWG.Done()
+}
+
 // Run executes the unified pipeline synchronously.
 func (rt *Runtime) Run(ctx context.Context, req Request) (*Response, error) {
+	if rt == nil {
+		return nil, ErrRuntimeClosed
+	}
+	if err := rt.beginRun(); err != nil {
+		return nil, err
+	}
+	defer rt.endRun()
+
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID == "" {
+		sessionID = defaultSessionID(rt.mode.EntryPoint)
+	}
+	req.SessionID = sessionID
+
+	if err := rt.sessionGate.Acquire(ctx, sessionID); err != nil {
+		return nil, ErrConcurrentExecution
+	}
+	defer rt.sessionGate.Release(sessionID)
+
 	prep, err := rt.prepare(ctx, req)
 	if err != nil {
 		return nil, err
@@ -195,22 +239,48 @@ func (rt *Runtime) Run(ctx context.Context, req Request) (*Response, error) {
 
 // RunStream executes the pipeline asynchronously and returns events over a channel.
 func (rt *Runtime) RunStream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
-	prep, err := rt.prepare(ctx, req)
-	if err != nil {
+	if rt == nil {
+		return nil, ErrRuntimeClosed
+	}
+	if strings.TrimSpace(req.Prompt) == "" {
+		return nil, errors.New("api: prompt is empty")
+	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID == "" {
+		sessionID = defaultSessionID(rt.mode.EntryPoint)
+	}
+	req.SessionID = sessionID
+
+	if err := rt.beginRun(); err != nil {
 		return nil, err
 	}
+
 	// 缓冲区增大以吸收前端延迟（逐字符渲染等）导致的背压，避免 progress emit 阻塞工具执行
 	out := make(chan StreamEvent, 512)
 	progressChan := make(chan StreamEvent, 256)
-	baseCtx := prep.ctx
+	baseCtx := ctx
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
 	progressMW := newProgressMiddleware(progressChan)
 	ctxWithEmit := withStreamEmit(baseCtx, progressMW.streamEmit())
-	prep.ctx = ctxWithEmit
 	go func() {
+		defer rt.endRun()
 		defer close(out)
+		if err := rt.sessionGate.Acquire(ctxWithEmit, sessionID); err != nil {
+			isErr := true
+			out <- StreamEvent{Type: EventError, Output: ErrConcurrentExecution.Error(), IsError: &isErr}
+			return
+		}
+		defer rt.sessionGate.Release(sessionID)
+
+		prep, err := rt.prepare(ctxWithEmit, req)
+		if err != nil {
+			isErr := true
+			out <- StreamEvent{Type: EventError, Output: err.Error(), IsError: &isErr}
+			return
+		}
+
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
@@ -243,21 +313,33 @@ func (rt *Runtime) RunStream(ctx context.Context, req Request) (<-chan StreamEve
 
 // Close releases held resources.
 func (rt *Runtime) Close() error {
-	var err error
-	if rt.rulesLoader != nil {
-		if e := rt.rulesLoader.Close(); e != nil {
-			err = e
+	if rt == nil {
+		return nil
+	}
+	rt.closeOnce.Do(func() {
+		rt.runMu.Lock()
+		rt.closed = true
+		rt.runMu.Unlock()
+
+		rt.runWG.Wait()
+
+		var err error
+		if rt.rulesLoader != nil {
+			if e := rt.rulesLoader.Close(); e != nil {
+				err = e
+			}
 		}
-	}
-	if rt.registry != nil {
-		rt.registry.Close()
-	}
-	if rt.tracer != nil {
-		if e := rt.tracer.Shutdown(); e != nil && err == nil {
-			err = e
+		if rt.registry != nil {
+			rt.registry.Close()
 		}
-	}
-	return err
+		if rt.tracer != nil {
+			if e := rt.tracer.Shutdown(); e != nil && err == nil {
+				err = e
+			}
+		}
+		rt.closeErr = err
+	})
+	return rt.closeErr
 }
 
 // Config returns the last loaded project config.
@@ -300,6 +382,7 @@ type preparedRun struct {
 	prompt         string
 	history        *message.History
 	normalized     Request
+	recorder       *hookRecorder
 	commandResults []CommandExecution
 	skillResults   []SkillExecution
 	mode           ModeContext
@@ -350,12 +433,14 @@ func (rt *Runtime) prepare(ctx context.Context, req Request) (preparedRun, error
 	prompt = promptAfterSkills
 	activation.Prompt = prompt
 
+	recorder := defaultHookRecorder()
 	whitelist := combineToolWhitelists(normalized.ToolWhitelist, nil)
 	return preparedRun{
 		ctx:            ctx,
 		prompt:         prompt,
 		history:        history,
 		normalized:     normalized,
+		recorder:       recorder,
 		commandResults: cmdRes,
 		skillResults:   skillRes,
 		mode:           normalized.Mode,
@@ -373,7 +458,7 @@ func (rt *Runtime) runAgentWithMiddleware(prep preparedRun, extras ...middleware
 
 	// Emit ModelSelected event if a non-default model was selected
 	if selectedTier != "" {
-		hookAdapter := &runtimeHookAdapter{executor: rt.hooks, recorder: rt.recorder}
+		hookAdapter := &runtimeHookAdapter{executor: rt.hooks, recorder: prep.recorder}
 		// Best-effort event emission; errors are logged but don't block execution
 		if err := hookAdapter.ModelSelected(prep.ctx, coreevents.ModelSelectedPayload{
 			ToolName:  prep.normalized.TargetSubagent,
@@ -392,14 +477,15 @@ func (rt *Runtime) runAgentWithMiddleware(prep preparedRun, extras ...middleware
 		tools:        availableTools(rt.registry, prep.toolWhitelist),
 		systemPrompt: rt.opts.SystemPrompt,
 		rulesLoader:  rt.rulesLoader,
-		hooks:        &runtimeHookAdapter{executor: rt.hooks, recorder: rt.recorder},
+		hooks:        &runtimeHookAdapter{executor: rt.hooks, recorder: prep.recorder},
+		recorder:     prep.recorder,
 		compactor:    rt.compactor,
 		sessionID:    prep.normalized.SessionID,
 	}
 
 	toolExec := &runtimeToolExecutor{
 		executor: rt.executor,
-		hooks:    &runtimeHookAdapter{executor: rt.hooks, recorder: rt.recorder},
+		hooks:    &runtimeHookAdapter{executor: rt.hooks, recorder: prep.recorder},
 		history:  prep.history,
 		allow:    prep.toolWhitelist,
 		root:     rt.sbRoot,
@@ -463,8 +549,8 @@ func (rt *Runtime) runAgentWithMiddleware(prep preparedRun, extras ...middleware
 				Payload:   payload,
 			})
 		}
-		if rt.recorder != nil {
-			rt.recorder.Record(coreevents.Event{
+		if prep.recorder != nil {
+			prep.recorder.Record(coreevents.Event{
 				Type:      coreevents.TokenUsage,
 				SessionID: stats.SessionID,
 				RequestID: stats.RequestID,
@@ -476,13 +562,17 @@ func (rt *Runtime) runAgentWithMiddleware(prep preparedRun, extras ...middleware
 }
 
 func (rt *Runtime) buildResponse(prep preparedRun, result runResult) *Response {
+	events := []coreevents.Event(nil)
+	if prep.recorder != nil {
+		events = prep.recorder.Drain()
+	}
 	resp := &Response{
 		Mode:            prep.mode,
 		RequestID:       prep.normalized.RequestID,
 		Result:          convertRunResult(result),
 		CommandResults:  prep.commandResults,
 		SkillResults:    prep.skillResults,
-		HookEvents:      rt.recorder.Drain(),
+		HookEvents:      events,
 		ProjectConfig:   rt.Settings(),
 		Settings:        rt.Settings(),
 		Plugins:         snapshotPlugins(rt.plugins),
@@ -786,6 +876,7 @@ type conversationModel struct {
 	usage        model.Usage
 	stopReason   string
 	hooks        *runtimeHookAdapter
+	recorder     *hookRecorder
 	compactor    *compactor
 	sessionID    string
 }
@@ -804,7 +895,7 @@ func (m *conversationModel) Generate(ctx context.Context, _ *agent.Context) (*ag
 	}
 
 	if m.compactor != nil {
-		if _, _, err := m.compactor.maybeCompact(ctx, m.history, m.sessionID); err != nil {
+		if _, _, err := m.compactor.maybeCompact(ctx, m.history, m.sessionID, m.recorder); err != nil {
 			return nil, err
 		}
 	}

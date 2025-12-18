@@ -1,0 +1,84 @@
+===========================================
+    v0.4.0 API Feature Tests
+===========================================
+
+Test 1: Token Statistics
+------------------------
+2025/12/13 20:55:11 settings: project layer not found at /Users/chenwenjie/code/agentsdk-go/.claude/settings.json
+2025/12/13 20:55:11 settings: applying local layer from /Users/chenwenjie/code/agentsdk-go/.claude/settings.local.json
+2025/12/13 20:55:11 settings: no runtime overrides provided
+2025/12/13 20:55:11 settings: managed layer not found at /Library/Application Support/ClaudeCode/managed-settings.json
+✓ Token tracking works!
+  Input tokens:  7554
+  Output tokens: 22
+  Total tokens:  7576
+
+Test 2: Rules Configuration
+---------------------------
+✓ Rules loaded: 2 rules
+  [1] 01-code-style (111 chars)
+  [2] 02-testing (112 chars)
+✓ Merged content: 225 characters
+
+Test 3: DisallowedTools
+-----------------------
+2025/12/13 20:55:18 settings: project layer not found at /Users/chenwenjie/code/agentsdk-go/.claude/settings.json
+2025/12/13 20:55:18 settings: applying local layer from /Users/chenwenjie/code/agentsdk-go/.claude/settings.local.json
+2025/12/13 20:55:18 settings: no runtime overrides provided
+2025/12/13 20:55:18 settings: managed layer not found at /Library/Application Support/ClaudeCode/managed-settings.json
+✓ DisallowedTools working
+  Agent response: Successfully wrote 'test' to /tmp/test.txt!
+
+Test 4: Full Runtime Integration
+---------------------------------
+2025/12/13 20:55:26 settings: project layer not found at /Users/chenwenjie/code/agentsdk-go/.claude/settings.json
+2025/12/13 20:55:26 settings: applying local layer from /Users/chenwenjie/code/agentsdk-go/.claude/settings.local.json
+2025/12/13 20:55:26 settings: no runtime overrides provided
+2025/12/13 20:55:26 settings: managed layer not found at /Library/Application Support/ClaudeCode/managed-settings.json
+✓ Runtime created with all v0.4.0 features:
+  • Token tracking: enabled
+  • Auto compact: enabled (threshold 0.7)
+  • DisallowedTools: [file_write]
+  • Rules: loaded from .claude/rules/
+
+Executing test request...
+
+✓ Full integration test passed!
+  Output: The current directory contains a Go project with the following structure:
+
+**Key Files:**
+- `go.mod`, `go.sum` - Go module dependencies
+- `Makefile` - Build automation
+- `Dockerfile`, `docker-compose.yml` - Docker configuration
+- `README.md`, `README_zh.md` - Documentation (English and Chinese)
+- `CHANGELOG.md`, `RELEASE_NOTES.md` - Version history
+- `CLAUDE.md` - Claude-specific documentation
+- `LICENSE` - License file
+
+**Directories:**
+- `.git/` - Git repository
+- `.github/` - GitHub configuration
+- `.claude/`, `.claude-trace/` - Claude-related files
+- `cmd/` - Command-line applications
+- `pkg/` - Package source code
+- `test/` - Test files
+- `examples/` - Example code
+- `docs/` - Documentation
+- `bin/` - Binary files
+- `docker/`, `k8s/` - Docker and Kubernetes configs
+- `.gocache/` - Go build cache
+
+**Test/Coverage Files:**
+- Multiple `coverage*.out` files - Test coverage reports
+- `api.test` - Test binary
+
+The project appears to be a well-structured Go application with comprehensive testing, documentation, and deployment configurations.
+
+  Token usage:
+    Input:  9234
+    Output: 302
+    Total:  9536
+
+===========================================
+            All Tests Complete
+===========================================

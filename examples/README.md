@@ -46,7 +46,7 @@ go run ./examples/02-cli --session-id demo --settings-path .claude/settings.json
 ```
 
 ## 03-http — REST + SSE
-- Key features: `/health`, `/v1/run` (blocking), `/v1/run/stream` (SSE, 15s heartbeat); defaults to `:8080`.
+- Key features: `/health`, `/v1/run` (blocking), `/v1/run/stream` (SSE, 15s heartbeat); defaults to `:8080`. Fully thread-safe runtime handles concurrent requests automatically.
 - Run:
 ```bash
 source .env

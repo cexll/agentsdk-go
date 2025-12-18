@@ -26,6 +26,13 @@ agentsdk-go 是一个模块化的 Agent 开发框架，实现了 Claude Code 的
 - **OpenTelemetry**：分布式追踪与 span 传播
 - **UUID 追踪**：请求级别的 UUID 用于可观测性
 
+### 并发安全
+- **线程安全 Runtime**：所有 Runtime 方法可安全地从多个 goroutine 调用
+- **自动会话串行化**：相同 session ID 的请求自动排队
+- **优雅关闭**：`Runtime.Close()` 等待所有进行中的请求完成
+- **零数据竞态**：经 Go race detector 验证（`go test -race`）
+- **无需手动加锁**：用户无需关心同步问题
+
 ## 系统架构
 
 ### 核心层（6 个模块）
@@ -195,6 +202,49 @@ for event := range events {
     }
 }
 ```
+
+### 并发使用
+
+SDK 完全线程安全，支持并发请求处理：
+
+```go
+// 同一个 runtime 可以安全地从多个 goroutine 使用
+runtime, _ := api.New(ctx, api.Options{
+    ProjectRoot:  ".",
+    ModelFactory: provider,
+})
+defer runtime.Close()
+
+// 不同会话的并发请求会并行执行
+var wg sync.WaitGroup
+for i := 0; i < 10; i++ {
+    wg.Add(1)
+    go func(id int) {
+        defer wg.Done()
+        result, err := runtime.Run(ctx, api.Request{
+            Prompt:    fmt.Sprintf("任务 %d", id),
+            SessionID: fmt.Sprintf("session-%d", id), // 不同会话并发执行
+        })
+        if err != nil {
+            log.Printf("任务 %d 失败: %v", id, err)
+            return
+        }
+        log.Printf("任务 %d 完成: %s", id, result.Output)
+    }(i)
+}
+wg.Wait()
+
+// 相同 session ID 的请求会自动串行化
+go runtime.Run(ctx, api.Request{Prompt: "第一个", SessionID: "same"})
+go runtime.Run(ctx, api.Request{Prompt: "第二个", SessionID: "same"}) // 等待第一个完成
+```
+
+**并发保证：**
+- 所有 `Runtime` 方法都是线程安全的
+- 同会话请求自动排队（不会返回 `ErrConcurrentExecution`）
+- 不同会话请求并行执行
+- `Runtime.Close()` 优雅等待所有进行中的请求
+- 无需手动加锁或同步
 
 ### 自定义工具注册
 

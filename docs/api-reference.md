@@ -223,7 +223,7 @@ bus.Close()
 - `type Options` (`pkg/api/options.go:52`) configures Runtime. Key fields: `EntryPoint`, `Mode ModeContext`, `ProjectRoot`, `ClaudeDir`, `Model model.Model`, `ModelFactory`, `SystemPrompt`, `Middleware []middleware.Middleware`, `MiddlewareTimeout`, `MaxIterations`, `Timeout`, `TokenLimit`, `MaxSessions`, `Tools []tool.Tool`, `EnabledBuiltinTools`, `CustomTools`, `MCPServers []string`, `TypedHooks`, `HookMiddleware`, `Skills`, `Commands`, `Subagents`, `Sandbox SandboxOptions`. `withDefaults` sets `EntryPoint`, `Mode.EntryPoint`, `ProjectRoot`, `Sandbox.Root`, `MaxSessions`.
 - `type Request` (`options.go:115`) includes `Prompt`, `Mode`, `SessionID`, `Traits`, `Tags`, `Channels`, `Metadata`, `TargetSubagent`, `ToolWhitelist`, `ForceSkills`. `request.normalized` (`pkg/api/agent.go:150`) fills `SessionID`, merges `Mode`, trims prompt.
 - `type Response` (`options.go:132`) combines Agent output, skill/command results, hook events, sandbox report, `Settings`, and plugin snapshots. `Result` embeds `model.Usage` and `ToolCalls`.
-- `type Runtime struct` (`agent.go:24`) wires config loader, sandbox, tool registry/executor, progress recorder, hooks, `historyStore`, skills/commands/subagents managers, with `sync.RWMutex` for mutable config.
+- `type Runtime struct` (`agent.go:24`) wires config loader, sandbox, tool registry/executor, hooks, `historyStore`, skills/commands/subagents managers, with `sync.RWMutex` for mutable config. Hook events are now recorded per request; `Runtime.recorder` is deprecated and retained only for backward compatibility.
 - `func New(ctx, opts) (*Runtime, error)` (`agent.go:40`) loads settings, resolves model, builds sandbox, registers tools/MCP servers, sets up hooks/skills/commands/subagents, and creates `newHistoryStore(opts.MaxSessions)`.
 - `func (rt *Runtime) Run(ctx, req) (*Response, error)` (`agent.go:70`) executes the sync flow: `prepare` validates prompt, fetches history, runs commands/skills/subagents, builds `middleware.State`, then calls `runAgent`.
 - `func (rt *Runtime) RunStream(ctx, req) (<-chan StreamEvent, error)` (`agent.go:88`) builds a progress middleware and writes `StreamEvent` (`pkg/api/stream.go:5`) to a channel. Types include Anthropic-compatible `message_*` plus `agent_start`, `tool_execution_*`, `error`.
@@ -302,20 +302,66 @@ for evt := range eventsCh {
 
 - **Notes**: `Options` require `Model` or `ModelFactory`; missing both returns `ErrMissingModel`. `RunStream` uses an internal goroutine; callers must consume the channel to avoid blocking. `historyStore` is in-memory only. `ToolWhitelist`/`ForceSkills` act at declarative runtime; Agent still iterates all model `ToolCalls`. `SandboxOptions` without `AllowedPaths` default to root-only—overly strict settings cause tool failures.
 
+## Concurrency Model
+
+`pkg/api.Runtime` is fully **thread-safe** with automatic session-level serialization:
+
+**Concurrency Guarantees:**
+- **All Runtime methods are thread-safe**: `Run`, `RunStream`, `Close`, `Config`, `Settings`, `GetSessionStats`, etc. can be called concurrently from any goroutine.
+- **Same `SessionID`**: Requests are automatically queued and executed serially. The second request waits for the first to complete—no `ErrConcurrentExecution` is thrown (unless context is cancelled).
+- **Different `SessionID`s**: Execute in parallel without blocking each other.
+- **Graceful shutdown**: `Runtime.Close()` waits for all in-flight `Run`/`RunStream` calls to complete before releasing resources.
+- **Zero data races**: All internal state is protected by mutexes and verified with `go test -race`.
+
+**HTTP Server Pattern:**
+
+Use request-scoped or client-specific session IDs so independent requests don't block each other:
+
+```go
+func (s *server) handleRun(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(r.Header.Get("X-Session-ID"))
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("req-%d", time.Now().UnixNano())
+	}
+
+	// Multiple goroutines can call Runtime.Run concurrently
+	resp, err := s.runtime.Run(r.Context(), api.Request{
+		Prompt:    "your prompt here",
+		SessionID: sessionID, // Different IDs = parallel execution
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = resp // write response
+}
+```
+
+**Implementation Details:**
+- `sessionGate` (pkg/api/runtime_helpers.go:1) uses `sync.Map` + channel semaphores for per-session locking.
+- `beginRun`/`endRun` coordinate with `Runtime.Close()` via `sync.WaitGroup` to prevent resource leaks.
+- Each request gets its own `hookRecorder` (pkg/api/runtime_helpers.go:30) to avoid shared state races.
+- `Options.frozen()` deep-copies configuration during `api.New` to prevent external mutation races.
+
 ## v0.4.0 New APIs
 
 ### Token Statistics
 
 - `type TokenStats` (`pkg/api/token.go`) tracks token usage across requests: `InputTokens`, `OutputTokens`, `CacheReadTokens`, `CacheCreationTokens`, `TotalTokens`.
 - `type TokenTracker` (`pkg/api/token.go`) accumulates stats across turns with thread-safe access via `Record(stats)` and `GetStats()`.
-- `Options.OnTokenUsage` callback receives `TokenStats` after each model call for real-time monitoring.
+- `Options.TokenCallback` is called **synchronously** after each model call for real-time monitoring. The callback should be lightweight and non-blocking to avoid delaying agent execution. If async processing is needed, spawn a goroutine inside the callback.
 
 ```go
 rt, _ := api.New(ctx, api.Options{
     ModelFactory: provider,
-    OnTokenUsage: func(stats api.TokenStats) {
+    TokenTracking: true,
+    TokenCallback: func(stats api.TokenStats) {
+        // Called synchronously - keep it fast
         log.Printf("Input: %d, Output: %d, Cache: %d",
-            stats.InputTokens, stats.OutputTokens, stats.CacheReadTokens)
+            stats.InputTokens, stats.OutputTokens, stats.CacheRead)
+
+        // For slow operations, use a goroutine:
+        // go sendToMetricsServer(stats)
     },
 })
 ```

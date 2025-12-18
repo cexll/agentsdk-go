@@ -101,7 +101,6 @@ func (b *Bus) Close() {
 		return
 	}
 	b.cancel()
-	close(b.queue)
 	b.subsMu.RLock()
 	for _, bucket := range b.subs {
 		for _, sub := range bucket {
@@ -133,13 +132,20 @@ func (b *Bus) Publish(evt Event) error {
 	if b.deduper != nil && !b.deduper.Allow(evt.ID) {
 		return nil
 	}
-	b.queue <- evt
-	return nil
+	select {
+	case <-b.baseCtx.Done():
+		return errors.New("events: bus closed")
+	case b.queue <- evt:
+		return nil
+	}
 }
 
 // Subscribe registers a handler for a specific event type. It returns an
 // unsubscribe function that is safe to call multiple times.
 func (b *Bus) Subscribe(t EventType, handler Handler, opts ...SubscriptionOption) func() {
+	if b == nil || b.closed.Load() {
+		return func() {}
+	}
 	cfg := subscriptionConfig{
 		timeout: 0,
 	}
@@ -222,8 +228,13 @@ func newSubscription(h Handler, cfg subscriptionConfig, bufSize int) *subscripti
 
 func (s *subscription) loop() {
 	defer s.wg.Done()
-	for evt := range s.queue {
-		s.invoke(evt)
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case evt := <-s.queue:
+			s.invoke(evt)
+		}
 	}
 }
 
@@ -256,7 +267,6 @@ func (s *subscription) stop() {
 		return
 	}
 	s.cancel()
-	close(s.queue)
 	s.wg.Wait()
 }
 
@@ -264,12 +274,11 @@ func (s *subscription) enqueue(evt Event) {
 	if s.closed.Load() {
 		return
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			_ = r // swallow panics to keep dispatch loop robust
-		}
-	}()
-	s.queue <- evt
+	select {
+	case <-s.ctx.Done():
+		return
+	case s.queue <- evt:
+	}
 }
 
 func (b *Bus) dispatchLoop() {

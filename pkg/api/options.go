@@ -23,7 +23,9 @@ import (
 )
 
 var (
-	ErrMissingModel = errors.New("api: model factory is required")
+	ErrMissingModel        = errors.New("api: model factory is required")
+	ErrConcurrentExecution = errors.New("concurrent execution on same session is not allowed")
+	ErrRuntimeClosed       = errors.New("api: runtime is closed")
 )
 
 type EntryPoint string
@@ -185,8 +187,10 @@ type Options struct {
 	// TokenTracking enables token usage statistics collection.
 	// When true, the runtime tracks input/output tokens per session and model.
 	TokenTracking bool
-	// TokenCallback is invoked after each model call with usage stats.
-	// Only called when TokenTracking is true.
+	// TokenCallback is called synchronously after token usage is recorded.
+	// Only called when TokenTracking is true. The callback should be lightweight
+	// and non-blocking to avoid delaying the agent execution. If you need async
+	// processing, spawn a goroutine inside the callback.
 	TokenCallback TokenCallback
 
 	// AutoCompact enables automatic context compaction for long sessions.
@@ -298,8 +302,9 @@ func WithTokenTracking(enabled bool) func(*Options) {
 	}
 }
 
-// WithTokenCallback sets a callback function that is invoked after each model
-// call with the token usage statistics. Automatically enables TokenTracking.
+// WithTokenCallback sets a callback function that is called synchronously after
+// each model call with the token usage statistics. Automatically enables
+// TokenTracking.
 func WithTokenCallback(fn TokenCallback) func(*Options) {
 	return func(o *Options) {
 		o.TokenCallback = fn
@@ -366,6 +371,129 @@ func (o Options) withDefaults() Options {
 		o.MaxSessions = defaultMaxSessions
 	}
 	return o
+}
+
+// frozen returns a defensive copy of Options so callers can safely reuse/mutate
+// the original Options struct without racing against a live Runtime.
+func (o Options) frozen() Options {
+	o.Mode = freezeMode(o.Mode)
+
+	if len(o.Middleware) > 0 {
+		o.Middleware = append([]middleware.Middleware(nil), o.Middleware...)
+	}
+	if len(o.Tools) > 0 {
+		o.Tools = append([]tool.Tool(nil), o.Tools...)
+	}
+	if len(o.EnabledBuiltinTools) > 0 {
+		o.EnabledBuiltinTools = append([]string(nil), o.EnabledBuiltinTools...)
+	}
+	if len(o.DisallowedTools) > 0 {
+		o.DisallowedTools = append([]string(nil), o.DisallowedTools...)
+	}
+	if len(o.CustomTools) > 0 {
+		o.CustomTools = append([]tool.Tool(nil), o.CustomTools...)
+	}
+	if len(o.MCPServers) > 0 {
+		o.MCPServers = append([]string(nil), o.MCPServers...)
+	}
+	if len(o.TypedHooks) > 0 {
+		hooks := make([]corehooks.ShellHook, len(o.TypedHooks))
+		for i, hook := range o.TypedHooks {
+			hooks[i] = hook
+			if len(hook.Env) > 0 {
+				hooks[i].Env = maps.Clone(hook.Env)
+			}
+		}
+		o.TypedHooks = hooks
+	}
+	if len(o.HookMiddleware) > 0 {
+		o.HookMiddleware = append([]coremw.Middleware(nil), o.HookMiddleware...)
+	}
+	if len(o.Skills) > 0 {
+		skillsCopy := make([]SkillRegistration, len(o.Skills))
+		for i, reg := range o.Skills {
+			skillsCopy[i] = reg
+			def := reg.Definition
+			if len(def.Metadata) > 0 {
+				def.Metadata = maps.Clone(def.Metadata)
+			}
+			if len(def.Matchers) > 0 {
+				def.Matchers = append([]skills.Matcher(nil), def.Matchers...)
+			}
+			skillsCopy[i].Definition = def
+		}
+		o.Skills = skillsCopy
+	}
+	if len(o.Commands) > 0 {
+		o.Commands = append([]CommandRegistration(nil), o.Commands...)
+	}
+	if len(o.Subagents) > 0 {
+		subCopy := make([]SubagentRegistration, len(o.Subagents))
+		for i, reg := range o.Subagents {
+			subCopy[i] = reg
+			def := reg.Definition
+			def.BaseContext = def.BaseContext.Clone()
+			if len(def.Matchers) > 0 {
+				def.Matchers = append([]skills.Matcher(nil), def.Matchers...)
+			}
+			subCopy[i].Definition = def
+		}
+		o.Subagents = subCopy
+	}
+
+	o.Sandbox = freezeSandboxOptions(o.Sandbox)
+
+	if len(o.ModelPool) > 0 {
+		o.ModelPool = maps.Clone(o.ModelPool)
+	}
+	if len(o.SubagentModelMapping) > 0 {
+		o.SubagentModelMapping = maps.Clone(o.SubagentModelMapping)
+	}
+
+	return o
+}
+
+func freezeSandboxOptions(in SandboxOptions) SandboxOptions {
+	out := in
+	if len(in.AllowedPaths) > 0 {
+		out.AllowedPaths = append([]string(nil), in.AllowedPaths...)
+	}
+	if len(in.NetworkAllow) > 0 {
+		out.NetworkAllow = append([]string(nil), in.NetworkAllow...)
+	}
+	return out
+}
+
+func freezeMode(in ModeContext) ModeContext {
+	mode := in
+	if mode.CLI != nil {
+		cli := *mode.CLI
+		if len(cli.Args) > 0 {
+			cli.Args = append([]string(nil), cli.Args...)
+		}
+		if len(cli.Flags) > 0 {
+			cli.Flags = maps.Clone(cli.Flags)
+		}
+		mode.CLI = &cli
+	}
+	if mode.CI != nil {
+		ci := *mode.CI
+		if len(ci.Matrix) > 0 {
+			ci.Matrix = maps.Clone(ci.Matrix)
+		}
+		if len(ci.Metadata) > 0 {
+			ci.Metadata = maps.Clone(ci.Metadata)
+		}
+		mode.CI = &ci
+	}
+	if mode.Platform != nil {
+		plat := *mode.Platform
+		if len(plat.Labels) > 0 {
+			plat.Labels = maps.Clone(plat.Labels)
+		}
+		mode.Platform = &plat
+	}
+	return mode
 }
 
 // defaultNetworkAllowList 默认允许本地网络；访问外网需显式配置

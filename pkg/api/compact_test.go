@@ -23,7 +23,7 @@ func msgWithTokens(role string, tokens int) message.Message {
 
 func TestCompactor_ShouldCompactThreshold(t *testing.T) {
 	cfg := CompactConfig{Enabled: true, Threshold: 0.8, PreserveCount: 1}
-	c := newCompactor(cfg, &stubModel{}, 100, nil, nil)
+	c := newCompactor(cfg, &stubModel{}, 100, nil)
 
 	below := []message.Message{
 		msgWithTokens("user", 30),
@@ -60,9 +60,9 @@ func TestCompactor_CompactFlow(t *testing.T) {
 	}}
 	rec := defaultHookRecorder()
 	cfg := CompactConfig{Enabled: true, Threshold: 0.1, PreserveCount: 2}
-	c := newCompactor(cfg, mdl, 50, nil, rec)
+	c := newCompactor(cfg, mdl, 50, nil)
 
-	_, compacted, err := c.maybeCompact(context.Background(), hist, "sess")
+	_, compacted, err := c.maybeCompact(context.Background(), hist, "sess", rec)
 	if err != nil {
 		t.Fatalf("maybeCompact returned error: %v", err)
 	}
@@ -107,9 +107,9 @@ func TestCompactor_HookDenySkips(t *testing.T) {
 
 	rec := defaultHookRecorder()
 	cfg := CompactConfig{Enabled: true, Threshold: 0.1, PreserveCount: 1}
-	c := newCompactor(cfg, mdl, 50, hooks, rec)
+	c := newCompactor(cfg, mdl, 50, hooks)
 
-	_, compacted, err := c.maybeCompact(context.Background(), hist, "sess")
+	_, compacted, err := c.maybeCompact(context.Background(), hist, "sess", rec)
 	if err != nil {
 		t.Fatalf("maybeCompact returned error: %v", err)
 	}

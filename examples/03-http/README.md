@@ -16,6 +16,16 @@ Defaults to `:8080`. Override with `AGENTSDK_HTTP_ADDR`. Choose a model with `AG
 - `POST /v1/run` → blocking JSON response
 - `POST /v1/run/stream` → Server-Sent Events (ping every 15s)
 
+## Concurrency
+
+The HTTP server uses a single shared `api.Runtime` that is fully thread-safe:
+- **Multiple concurrent requests** are handled safely
+- **Same `session_id`**: Requests are automatically queued and executed serially
+- **Different `session_id`s**: Execute in parallel without blocking each other
+- **No manual locking required**: The Runtime handles all synchronization internally
+
+Example: 10 concurrent requests with unique session IDs will execute in parallel, but 10 requests with the same session ID will execute one at a time.
+
 ## Request Body
 ```json
 {

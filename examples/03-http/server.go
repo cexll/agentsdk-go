@@ -68,6 +68,9 @@ func (s *httpServer) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Runtime serializes per SessionID. If multiple HTTP requests share a session_id concurrently,
+	// one of them can fail with api.ErrConcurrentExecution (treat it as "session busy").
+	// Use request-id (stateless) or user/client session-id (stateful) as session_id to isolate work.
 	sessionID := req.ensureSessionID()
 	ctx, cancel := s.requestContext(r.Context(), req.TimeoutMs)
 	defer cancel()
@@ -117,6 +120,8 @@ func (s *httpServer) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Same as /v1/run: isolate concurrent requests with distinct session_id values to avoid
+	// per-session concurrency conflicts (api.ErrConcurrentExecution).
 	sessionID := req.ensureSessionID()
 	ctx, cancel := s.requestContext(r.Context(), req.TimeoutMs)
 	defer cancel()

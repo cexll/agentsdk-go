@@ -18,7 +18,6 @@ type stubTool struct {
 	delay   time.Duration
 	mutate  bool
 	called  int32
-	lastArg map[string]any
 }
 
 func (s *stubTool) Name() string        { return s.name }
@@ -26,7 +25,6 @@ func (s *stubTool) Description() string { return "stub" }
 func (s *stubTool) Schema() *JSONSchema { return nil }
 func (s *stubTool) Execute(ctx context.Context, params map[string]interface{}) (*ToolResult, error) {
 	atomic.AddInt32(&s.called, 1)
-	s.lastArg = params
 	if s.delay > 0 {
 		time.Sleep(s.delay)
 	}

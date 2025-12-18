@@ -42,6 +42,10 @@ func main() {
 	}
 	defer runtime.Close()
 
+	// Concurrency note:
+	// Runtime serializes execution per SessionID. In HTTP servers, avoid reusing a single shared
+	// session_id across concurrent requests, or you may hit api.ErrConcurrentExecution. Use a
+	// request-id (stateless) or a user/client session-id (stateful) to isolate work.
 	staticDir := filepath.Join(projectRoot, "examples", "03-http", "static")
 	srv := &httpServer{
 		runtime:        runtime,

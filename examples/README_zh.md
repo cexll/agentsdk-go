@@ -46,7 +46,7 @@ go run ./examples/02-cli --session-id demo --settings-path .claude/settings.json
 ```
 
 ## 03-http — REST + SSE
-- 关键特性：`/health`、`/v1/run`（阻塞）、`/v1/run/stream`（SSE，15s 心跳）；默认端口 `:8080`。
+- 关键特性：`/health`、`/v1/run`（阻塞）、`/v1/run/stream`（SSE，15s 心跳）；默认端口 `:8080`。完全线程安全的 Runtime 自动处理并发请求。
 - 运行：
 ```bash
 source .env

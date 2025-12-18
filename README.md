@@ -27,6 +27,13 @@ agentsdk-go is a modular agent development framework that implements Claude Code
 - **OpenTelemetry**: Distributed tracing with span propagation
 - **UUID Tracking**: Request-level UUID for observability
 
+### Concurrency Safety
+- **Thread-Safe Runtime**: All Runtime methods can be safely called from multiple goroutines
+- **Automatic Session Serialization**: Requests with the same session ID are automatically queued
+- **Graceful Shutdown**: `Runtime.Close()` waits for in-flight requests to complete
+- **Zero Data Races**: Verified with Go's race detector (`go test -race`)
+- **No Manual Locking Required**: Users don't need to worry about synchronization
+
 ### Examples
 - `examples/01-basic` - Minimal request/response
 - `examples/02-cli` - Interactive REPL with session history
@@ -216,6 +223,49 @@ for event := range events {
     }
 }
 ```
+
+### Concurrent Usage
+
+The SDK is fully thread-safe and supports concurrent request processing:
+
+```go
+// Same runtime can be safely used from multiple goroutines
+runtime, _ := api.New(ctx, api.Options{
+    ProjectRoot:  ".",
+    ModelFactory: provider,
+})
+defer runtime.Close()
+
+// Concurrent requests with different sessions execute in parallel
+var wg sync.WaitGroup
+for i := 0; i < 10; i++ {
+    wg.Add(1)
+    go func(id int) {
+        defer wg.Done()
+        result, err := runtime.Run(ctx, api.Request{
+            Prompt:    fmt.Sprintf("Task %d", id),
+            SessionID: fmt.Sprintf("session-%d", id), // Different sessions run concurrently
+        })
+        if err != nil {
+            log.Printf("Task %d failed: %v", id, err)
+            return
+        }
+        log.Printf("Task %d completed: %s", id, result.Output)
+    }(i)
+}
+wg.Wait()
+
+// Requests with the same session ID are automatically serialized
+go runtime.Run(ctx, api.Request{Prompt: "First", SessionID: "same"})
+go runtime.Run(ctx, api.Request{Prompt: "Second", SessionID: "same"}) // Waits for first to complete
+```
+
+**Concurrency Guarantees:**
+- All `Runtime` methods are thread-safe
+- Same-session requests are automatically queued (no `ErrConcurrentExecution`)
+- Different-session requests execute in parallel
+- `Runtime.Close()` gracefully waits for all in-flight requests
+- No manual locking or synchronization required
 
 ### Customize Tool Registration
 

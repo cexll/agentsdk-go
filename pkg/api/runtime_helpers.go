@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -393,4 +394,48 @@ func snapshotSandbox(mgr *sandbox.Manager) SandboxReport {
 		return SandboxReport{}
 	}
 	return SandboxReport{ResourceLimits: mgr.Limits()}
+}
+
+type sessionGate struct {
+	gates sync.Map // map[string]chan struct{}
+}
+
+func newSessionGate() *sessionGate {
+	return &sessionGate{}
+}
+
+func (g *sessionGate) Acquire(ctx context.Context, sessionID string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		gate := make(chan struct{})
+		existing, loaded := g.gates.LoadOrStore(sessionID, gate)
+		if !loaded {
+			if err := ctx.Err(); err != nil {
+				g.Release(sessionID)
+				return err
+			}
+			return nil
+		}
+
+		held := existing.(chan struct{})
+		select {
+		case <-held:
+			continue
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (g *sessionGate) Release(sessionID string) {
+	if g == nil {
+		return
+	}
+	existing, ok := g.gates.LoadAndDelete(sessionID)
+	if !ok {
+		return
+	}
+	close(existing.(chan struct{}))
 }

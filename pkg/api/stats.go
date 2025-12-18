@@ -44,7 +44,10 @@ type ModelStats struct {
 	RequestCount  int   `json:"request_count"`
 }
 
-// TokenCallback is invoked after each model call with the usage stats.
+// TokenCallback is called synchronously after token usage is recorded.
+// The callback should be lightweight and non-blocking to avoid delaying
+// the agent execution. If you need async processing, spawn a goroutine
+// inside the callback.
 type TokenCallback func(stats TokenStats)
 
 // tokenTracker maintains thread-safe token statistics across sessions.
@@ -74,8 +77,8 @@ func (t *tokenTracker) Record(stats TokenStats) {
 		return
 	}
 
+	var cb TokenCallback
 	t.mu.Lock()
-	defer t.mu.Unlock()
 
 	// Update session stats
 	session, ok := t.sessions[stats.SessionID]
@@ -138,11 +141,11 @@ func (t *tokenTracker) Record(stats TokenStats) {
 		modelStats.RequestCount++
 	}
 
-	// Invoke callback outside the lock would be better but we keep it simple
-	if t.callback != nil {
-		// Copy stats to avoid mutation
-		statsCopy := stats
-		go t.callback(statsCopy)
+	cb = t.callback
+	t.mu.Unlock()
+
+	if cb != nil {
+		cb(stats)
 	}
 }
 
