@@ -45,4 +45,3 @@ func TestRuntimeCloseWaitsForInFlightRun(t *testing.T) {
 		t.Fatalf("expected ErrRuntimeClosed from RunStream, got %v", err)
 	}
 }
-

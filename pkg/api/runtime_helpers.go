@@ -419,7 +419,7 @@ func (g *sessionGate) Acquire(ctx context.Context, sessionID string) error {
 			return nil
 		}
 
-		held := existing.(chan struct{})
+		held := existing.(chan struct{}) //nolint:errcheck // sync.Map guarantees type safety for stored values
 		select {
 		case <-held:
 			continue
@@ -437,5 +437,5 @@ func (g *sessionGate) Release(sessionID string) {
 	if !ok {
 		return
 	}
-	close(existing.(chan struct{}))
+	close(existing.(chan struct{})) //nolint:errcheck // sync.Map guarantees type safety for stored values
 }

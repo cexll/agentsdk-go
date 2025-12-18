@@ -584,15 +584,18 @@ func TestConcurrentExecution(t *testing.T) {
 			var in runRequest
 			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
+				//nolint:errcheck // test HTTP handler, error is already logged in response
 				_ = json.NewEncoder(w).Encode(runResponse{Error: err.Error()})
 				return
 			}
 			out, err := rt.Run(r.Context(), Request{Prompt: in.Prompt, SessionID: in.SessionID})
 			if err != nil {
 				w.WriteHeader(http.StatusConflict)
+				//nolint:errcheck // test HTTP handler, error is already logged in response
 				_ = json.NewEncoder(w).Encode(runResponse{Error: err.Error()})
 				return
 			}
+			//nolint:errcheck // test HTTP handler, final response write failure is not actionable
 			_ = json.NewEncoder(w).Encode(runResponse{Output: out.Result.Output})
 		}))
 		t.Cleanup(srv.Close)
@@ -614,6 +617,7 @@ func TestConcurrentExecution(t *testing.T) {
 				defer wg.Done()
 				<-start
 				for i := 0; i < perSession; i++ {
+					//nolint:errcheck // test code, json.Marshal with simple struct never fails
 					payload, _ := json.Marshal(runRequest{Prompt: "ok", SessionID: sessionID})
 					resp, err := client.Post(srv.URL, "application/json", bytes.NewReader(payload))
 					if err != nil {

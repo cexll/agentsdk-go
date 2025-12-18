@@ -14,10 +14,10 @@ import (
 )
 
 type stubTool struct {
-	name    string
-	delay   time.Duration
-	mutate  bool
-	called  int32
+	name   string
+	delay  time.Duration
+	mutate bool
+	called int32
 }
 
 func (s *stubTool) Name() string        { return s.name }

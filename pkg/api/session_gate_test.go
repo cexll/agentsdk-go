@@ -18,7 +18,7 @@ func TestSessionGate(t *testing.T) {
 		holderErr := make(chan error, 1)
 
 		go func() {
-			if err := gate.Acquire(nil, sessionID); err != nil {
+			if err := gate.Acquire(context.Background(), sessionID); err != nil {
 				holderErr <- err
 				return
 			}
