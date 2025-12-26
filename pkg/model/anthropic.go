@@ -36,12 +36,13 @@ type anthropicMessages interface {
 }
 
 type anthropicModel struct {
-	msgs        anthropicMessages
-	model       anthropicsdk.Model
-	maxTokens   int
-	maxRetries  int
-	system      string
-	temperature *float64
+	msgs             anthropicMessages
+	model            anthropicsdk.Model
+	maxTokens        int
+	maxRetries       int
+	system           string
+	temperature      *float64
+	configuredAPIKey string
 }
 
 var anthropicPredefinedHeaders = map[string]string{
@@ -85,17 +86,6 @@ func newAnthropicHeaders(defaults, overrides map[string]string) map[string]strin
 	merge(merged, defaults)
 	merge(merged, overrides)
 
-	authToken := strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN"))
-	apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
-
-	switch {
-	case authToken != "":
-		merged["x-api-key"] = authToken
-	case apiKey != "":
-		merged["x-api-key"] = apiKey
-	default:
-		delete(merged, "x-api-key")
-	}
 	if len(merged) == 0 {
 		return nil
 	}
@@ -104,6 +94,22 @@ func newAnthropicHeaders(defaults, overrides map[string]string) map[string]strin
 
 func (m *anthropicModel) requestOptions() []option.RequestOption {
 	headers := newAnthropicHeaders(nil, nil)
+
+	apiKey := strings.TrimSpace(m.configuredAPIKey)
+	if apiKey == "" {
+		if authToken := strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")); authToken != "" {
+			apiKey = authToken
+		} else {
+			apiKey = strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
+		}
+	}
+	if apiKey != "" {
+		if headers == nil {
+			headers = make(map[string]string)
+		}
+		headers["x-api-key"] = apiKey
+	}
+
 	if len(headers) == 0 {
 		return nil
 	}
@@ -119,11 +125,12 @@ func (m *anthropicModel) requestOptions() []option.RequestOption {
 
 // NewAnthropic constructs a production-ready Anthropic-backed Model.
 func NewAnthropic(cfg AnthropicConfig) (Model, error) {
-	if strings.TrimSpace(cfg.APIKey) == "" {
+	apiKey := strings.TrimSpace(cfg.APIKey)
+	if apiKey == "" {
 		return nil, errors.New("anthropic: api key required")
 	}
 
-	opts := []option.RequestOption{option.WithAPIKey(cfg.APIKey)}
+	opts := []option.RequestOption{option.WithAPIKey(apiKey)}
 	if cfg.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
 	}
@@ -142,12 +149,13 @@ func NewAnthropic(cfg AnthropicConfig) (Model, error) {
 	}
 
 	return &anthropicModel{
-		msgs:        &client.Messages,
-		model:       mapModelName(cfg.Model),
-		maxTokens:   maxTokens,
-		maxRetries:  retries,
-		system:      strings.TrimSpace(cfg.System),
-		temperature: cfg.Temperature,
+		msgs:             &client.Messages,
+		model:            mapModelName(cfg.Model),
+		maxTokens:        maxTokens,
+		maxRetries:       retries,
+		system:           strings.TrimSpace(cfg.System),
+		temperature:      cfg.Temperature,
+		configuredAPIKey: apiKey,
 	}, nil
 }
 

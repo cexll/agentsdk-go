@@ -667,8 +667,6 @@ func TestExtractToolCallNil(t *testing.T) {
 
 func TestCustomHeadersDisabled(t *testing.T) {
 	setEnv(t, "ANTHROPIC_CUSTOM_HEADERS_ENABLED", "false")
-	setEnv(t, "ANTHROPIC_AUTH_TOKEN", "")
-	setEnv(t, "ANTHROPIC_API_KEY", "env-key")
 	defaults := map[string]string{"User-Agent": "custom-client"}
 	overrides := map[string]string{"X-App": "user-app"}
 	if anthropicCustomHeadersEnabled() {
@@ -687,15 +685,13 @@ func TestCustomHeadersDisabled(t *testing.T) {
 	if headers["x-app"] != "user-app" {
 		t.Fatalf("user override missing, got %+v", headers)
 	}
-	if headers["x-api-key"] != "env-key" {
-		t.Fatalf("x-api-key mismatch: %q", headers["x-api-key"])
+	if _, ok := headers["x-api-key"]; ok {
+		t.Fatalf("x-api-key should be handled by requestOptions, got %+v", headers)
 	}
 }
 
 func TestCustomHeadersEnabled(t *testing.T) {
 	setEnv(t, "ANTHROPIC_CUSTOM_HEADERS_ENABLED", " TrUe ")
-	setEnv(t, "ANTHROPIC_AUTH_TOKEN", "")
-	setEnv(t, "ANTHROPIC_API_KEY", "env-two")
 	if !anthropicCustomHeadersEnabled() {
 		t.Fatal("custom headers gate should be enabled")
 	}
@@ -703,7 +699,7 @@ func TestCustomHeadersEnabled(t *testing.T) {
 	if headers == nil {
 		t.Fatal("expected predefined headers when gate is on")
 	}
-	if got, want := len(headers), len(anthropicPredefinedHeaders)+1; got != want {
+	if got, want := len(headers), len(anthropicPredefinedHeaders); got != want {
 		t.Fatalf("header count mismatch: got %d want %d", got, want)
 	}
 	for key, value := range anthropicPredefinedHeaders {
@@ -711,14 +707,13 @@ func TestCustomHeadersEnabled(t *testing.T) {
 			t.Fatalf("predefined header %s mismatch: %q", key, headers[key])
 		}
 	}
-	if headers["x-api-key"] != "env-two" {
-		t.Fatalf("expected env api key, got %q", headers["x-api-key"])
+	if _, ok := headers["x-api-key"]; ok {
+		t.Fatalf("x-api-key should be handled by requestOptions, got %+v", headers)
 	}
 }
 
 func TestCustomHeadersMergePriority(t *testing.T) {
 	setEnv(t, "ANTHROPIC_CUSTOM_HEADERS_ENABLED", "true")
-	setEnv(t, "ANTHROPIC_API_KEY", "priority-key")
 	defaults := map[string]string{"Content-Type": "text/plain", "User-Agent": "ua-default", "X-App": "default-app"}
 	overrides := map[string]string{"CONTENT-TYPE": "user-type", "X-App": "user-app", "extra": "1"}
 	headers := newAnthropicHeaders(defaults, overrides)
@@ -739,54 +734,84 @@ func TestCustomHeadersMergePriority(t *testing.T) {
 	}
 }
 
-func TestCustomHeadersAPIKeySource(t *testing.T) {
-	setEnv(t, "ANTHROPIC_AUTH_TOKEN", "")
+func TestCustomHeadersNeverInjectAPIKey(t *testing.T) {
 	setEnv(t, "ANTHROPIC_CUSTOM_HEADERS_ENABLED", "true")
+	setEnv(t, "ANTHROPIC_AUTH_TOKEN", "auth-token")
 	setEnv(t, "ANTHROPIC_API_KEY", "real-key")
+
 	overrides := map[string]string{"X-API-Key": "user"}
 	headers := newAnthropicHeaders(nil, overrides)
-	if headers["x-api-key"] != "real-key" {
-		t.Fatalf("expected env key, got %+v", headers)
+	if _, ok := headers["x-api-key"]; ok {
+		t.Fatalf("x-api-key should be handled by requestOptions, got %+v", headers)
 	}
+
 	if err := os.Setenv("ANTHROPIC_API_KEY", ""); err != nil {
 		t.Fatalf("set env: %v", err)
 	}
 	headers = newAnthropicHeaders(map[string]string{"Accept": "application/json"}, overrides)
 	if _, ok := headers["x-api-key"]; ok {
-		t.Fatalf("x-api-key should be absent when env missing: %+v", headers)
-	}
-	if err := os.Unsetenv("ANTHROPIC_CUSTOM_HEADERS_ENABLED"); err != nil {
-		t.Fatalf("unset env: %v", err)
-	}
-	if err := os.Unsetenv("ANTHROPIC_API_KEY"); err != nil {
-		t.Fatalf("unset env: %v", err)
-	}
-	headers = newAnthropicHeaders(nil, nil)
-	if headers != nil {
-		t.Fatalf("expected nil headers when nothing to merge, got %+v", headers)
+		t.Fatalf("x-api-key should be handled by requestOptions, got %+v", headers)
 	}
 }
 
-func TestCustomHeadersAuthTokenPriority(t *testing.T) {
-	setEnv(t, "ANTHROPIC_CUSTOM_HEADERS_ENABLED", "true")
-	setEnv(t, "ANTHROPIC_AUTH_TOKEN", "auth-token")
-	setEnv(t, "ANTHROPIC_API_KEY", "api-key")
-	headers := newAnthropicHeaders(nil, nil)
-	if headers["x-api-key"] != "auth-token" {
-		t.Fatalf("expected ANTHROPIC_AUTH_TOKEN to win, got %+v", headers)
+func TestAnthropicRequestOptionsAPIKeyPriority(t *testing.T) {
+	tests := []struct {
+		name           string
+		configuredKey  string
+		envAuthToken   string
+		envAPIKey      string
+		expectedAPIKey string
+	}{
+		{
+			name:           "configured APIKey wins over env vars",
+			configuredKey:  "sk-config-key",
+			envAuthToken:   "sk-env-auth-token",
+			envAPIKey:      "sk-env-api-key",
+			expectedAPIKey: "sk-config-key",
+		},
+		{
+			name:           "fallback to ANTHROPIC_AUTH_TOKEN",
+			configuredKey:  "",
+			envAuthToken:   "sk-env-auth-token",
+			envAPIKey:      "sk-env-api-key",
+			expectedAPIKey: "sk-env-auth-token",
+		},
+		{
+			name:           "fallback to ANTHROPIC_API_KEY",
+			configuredKey:  "",
+			envAuthToken:   "",
+			envAPIKey:      "sk-env-api-key",
+			expectedAPIKey: "sk-env-api-key",
+		},
+		{
+			name:           "no key when none provided",
+			configuredKey:  "",
+			envAuthToken:   "",
+			envAPIKey:      "",
+			expectedAPIKey: "",
+		},
 	}
 
-	setEnv(t, "ANTHROPIC_AUTH_TOKEN", "")
-	headers = newAnthropicHeaders(nil, nil)
-	if headers["x-api-key"] != "api-key" {
-		t.Fatalf("expected ANTHROPIC_API_KEY when auth token missing, got %+v", headers)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setEnv(t, "ANTHROPIC_AUTH_TOKEN", tt.envAuthToken)
+			setEnv(t, "ANTHROPIC_API_KEY", tt.envAPIKey)
+			setEnv(t, "ANTHROPIC_CUSTOM_HEADERS_ENABLED", "false")
+
+			m := &anthropicModel{configuredAPIKey: tt.configuredKey}
+			opts := m.requestOptions()
+			headers := headersFromOptions(t, opts)
+
+			got := headers.Get("x-api-key")
+			if got != tt.expectedAPIKey {
+				t.Fatalf("x-api-key mismatch: got %q want %q", got, tt.expectedAPIKey)
+			}
+		})
 	}
 }
 
 func TestCustomHeadersUserOverridePredefined(t *testing.T) {
-	setEnv(t, "ANTHROPIC_AUTH_TOKEN", "")
 	setEnv(t, "ANTHROPIC_CUSTOM_HEADERS_ENABLED", "true")
-	setEnv(t, "ANTHROPIC_API_KEY", "override-key")
 	overrides := map[string]string{"X-App": "user-app", "Anthropic-Version": "2099-01-01"}
 	headers := newAnthropicHeaders(nil, overrides)
 	if headers["x-app"] != "user-app" {
@@ -794,9 +819,6 @@ func TestCustomHeadersUserOverridePredefined(t *testing.T) {
 	}
 	if headers["anthropic-version"] != "2099-01-01" {
 		t.Fatalf("expected overridden anthropic-version: %+v", headers)
-	}
-	if headers["x-api-key"] != "override-key" {
-		t.Fatalf("env api key should remain authoritative: %+v", headers)
 	}
 	if headers["accept"] != anthropicPredefinedHeaders["accept"] {
 		t.Fatalf("unrelated predefined headers should remain: %+v", headers)
