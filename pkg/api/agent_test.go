@@ -144,9 +144,13 @@ func TestRuntimeToolExecutor_ErrorHistory(t *testing.T) {
 			if len(msgs) != 1 {
 				t.Fatalf("expected history entry, got %d", len(msgs))
 			}
+			// Result is now stored in ToolCall.Result instead of Message.Content
+			if len(msgs[0].ToolCalls) == 0 {
+				t.Fatal("expected at least one ToolCall in history")
+			}
 			var payload map[string]string
-			if unmarshalErr := json.Unmarshal([]byte(msgs[0].Content), &payload); unmarshalErr != nil {
-				t.Fatalf("history content not valid json: %v", unmarshalErr)
+			if unmarshalErr := json.Unmarshal([]byte(msgs[0].ToolCalls[0].Result), &payload); unmarshalErr != nil {
+				t.Fatalf("history tool result not valid json: %v", unmarshalErr)
 			}
 			if payload["error"] != fail.err.Error() {
 				t.Fatalf("expected error field, got %+v", payload)

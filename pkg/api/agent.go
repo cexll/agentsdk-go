@@ -1068,12 +1068,11 @@ func (t *runtimeToolExecutor) Execute(ctx context.Context, call agent.ToolCall, 
 
 	if t.history != nil {
 		t.history.Append(message.Message{
-			Role:    "tool",
-			Content: content,
+			Role: "tool",
 			ToolCalls: []message.ToolCall{{
-				ID:        call.ID,
-				Name:      call.Name,
-				Arguments: call.Input,
+				ID:     call.ID,
+				Name:   call.Name,
+				Result: content,
 			}},
 		})
 	}

@@ -451,6 +451,90 @@ func TestProviderFuncAndMustProvider(t *testing.T) {
 	MustProvider(ProviderFunc(func(context.Context) (Model, error) { return nil, errors.New("boom") }))
 }
 
+func TestBuildToolResults_MultipleToolCalls(t *testing.T) {
+	msg := Message{
+		Content: "fallback",
+		ToolCalls: []ToolCall{
+			{ID: "id-1", Result: "one"},
+			{ID: "id-2", Result: `{"error":"boom"}`},
+			{ID: "id-3"},
+		},
+	}
+
+	blocks := buildToolResults(msg)
+	if len(blocks) != 3 {
+		t.Fatalf("expected 3 tool result blocks, got %d", len(blocks))
+	}
+
+	wantIDs := []string{"id-1", "id-2", "id-3"}
+	wantText := []string{"one", `{"error":"boom"}`, "fallback"}
+	wantErr := []bool{false, true, false}
+	for i := range blocks {
+		if blocks[i].OfToolResult == nil {
+			t.Fatalf("expected tool result block at %d, got %+v", i, blocks[i])
+		}
+		if blocks[i].OfToolResult.ToolUseID != wantIDs[i] {
+			t.Fatalf("tool_use_id mismatch at %d: %q", i, blocks[i].OfToolResult.ToolUseID)
+		}
+		if len(blocks[i].OfToolResult.Content) != 1 || blocks[i].OfToolResult.Content[0].OfText == nil {
+			t.Fatalf("unexpected tool result content at %d: %+v", i, blocks[i].OfToolResult.Content)
+		}
+		if got := blocks[i].OfToolResult.Content[0].OfText.Text; got != wantText[i] {
+			t.Fatalf("tool result text mismatch at %d: %q", i, got)
+		}
+		if ptr := blocks[i].GetIsError(); ptr == nil || *ptr != wantErr[i] {
+			t.Fatalf("tool result is_error mismatch at %d: %+v", i, blocks[i])
+		}
+	}
+}
+
+func TestBuildToolResults_SingleToolCallPrefersResult(t *testing.T) {
+	blocks := buildToolResults(Message{
+		Content:   `{"error":"from-content"}`,
+		ToolCalls: []ToolCall{{ID: "id", Result: "ok"}},
+	})
+
+	if len(blocks) != 1 || blocks[0].OfToolResult == nil {
+		t.Fatalf("expected a single tool result block, got %+v", blocks)
+	}
+	if len(blocks[0].OfToolResult.Content) != 1 || blocks[0].OfToolResult.Content[0].OfText == nil {
+		t.Fatalf("unexpected tool result content: %+v", blocks[0].OfToolResult.Content)
+	}
+	if got := blocks[0].OfToolResult.Content[0].OfText.Text; got != "ok" {
+		t.Fatalf("expected tool result to use call.Result, got %q", got)
+	}
+	if ptr := blocks[0].GetIsError(); ptr == nil || *ptr {
+		t.Fatalf("expected call.Result to control is_error, got %+v", blocks[0])
+	}
+}
+
+func TestBuildToolResults_FallbackToContent(t *testing.T) {
+	blocks := buildToolResults(Message{
+		Content:   "from-content",
+		ToolCalls: []ToolCall{{ID: "id"}},
+	})
+
+	if len(blocks) != 1 || blocks[0].OfToolResult == nil {
+		t.Fatalf("expected a single tool result block, got %+v", blocks)
+	}
+	if len(blocks[0].OfToolResult.Content) != 1 || blocks[0].OfToolResult.Content[0].OfText == nil {
+		t.Fatalf("unexpected tool result content: %+v", blocks[0].OfToolResult.Content)
+	}
+	if got := blocks[0].OfToolResult.Content[0].OfText.Text; got != "from-content" {
+		t.Fatalf("expected tool result to fall back to message content, got %q", got)
+	}
+}
+
+func TestBuildToolResults_NoToolCalls(t *testing.T) {
+	blocks := buildToolResults(Message{Content: "plain"})
+	if len(blocks) != 1 || blocks[0].OfText == nil {
+		t.Fatalf("expected a single text block, got %+v", blocks)
+	}
+	if blocks[0].OfText.Text != "plain" {
+		t.Fatalf("text mismatch: %q", blocks[0].OfText.Text)
+	}
+}
+
 func TestAdditionalBranches(t *testing.T) {
 	m := &anthropicModel{model: anthropicsdk.ModelClaude3_5HaikuLatest}
 	if got := m.selectModel("claude-sonnet-4-5"); got != anthropicsdk.ModelClaudeSonnet4_5 {

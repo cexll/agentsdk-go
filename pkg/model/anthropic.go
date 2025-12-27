@@ -459,23 +459,6 @@ func buildToolResults(msg Message) []anthropicsdk.ContentBlockParamUnion {
 			anthropicsdk.NewTextBlock(msg.Content),
 		}
 	}
-	text := msg.Content
-	isError := false
-	if trimmed := strings.TrimSpace(text); strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
-		var payload map[string]any
-		if err := json.Unmarshal([]byte(trimmed), &payload); err == nil {
-			if val, ok := payload["error"]; ok {
-				switch t := val.(type) {
-				case bool:
-					isError = t
-				case string:
-					isError = strings.TrimSpace(t) != ""
-				default:
-					isError = t != nil
-				}
-			}
-		}
-	}
 
 	blocks := make([]anthropicsdk.ContentBlockParamUnion, 0, len(msg.ToolCalls))
 	for _, call := range msg.ToolCalls {
@@ -483,12 +466,42 @@ func buildToolResults(msg Message) []anthropicsdk.ContentBlockParamUnion {
 		if id == "" {
 			continue
 		}
-		blocks = append(blocks, anthropicsdk.NewToolResultBlock(id, text, isError))
+		text := call.Result
+		if strings.TrimSpace(text) == "" {
+			text = msg.Content
+		}
+		blocks = append(blocks, anthropicsdk.NewToolResultBlock(id, text, toolResultIsError(text)))
 	}
 	if len(blocks) == 0 {
-		blocks = append(blocks, anthropicsdk.NewTextBlock(text))
+		blocks = append(blocks, anthropicsdk.NewTextBlock(msg.Content))
 	}
 	return blocks
+}
+
+func toolResultIsError(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "{") || !strings.HasSuffix(trimmed, "}") {
+		return false
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return false
+	}
+
+	val, ok := payload["error"]
+	if !ok {
+		return false
+	}
+
+	switch t := val.(type) {
+	case bool:
+		return t
+	case string:
+		return strings.TrimSpace(t) != ""
+	default:
+		return t != nil
+	}
 }
 
 func convertTools(tools []ToolDefinition) ([]anthropicsdk.ToolUnionParam, error) {
