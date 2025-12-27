@@ -2,7 +2,7 @@
 
 # agentsdk-go Examples
 
-Five progressively richer examples. Run everything from the repo root.
+Eight examples. Run everything from the repo root.
 
 **Environment Setup**
 
@@ -28,6 +28,9 @@ export ANTHROPIC_API_KEY=sk-ant-your-key-here
 - `03-http` (~300 lines): REST + SSE server on `:8080`, production-ready wiring.
 - `04-advanced` (~1400 lines): full stack with middleware, hooks, MCP, sandbox, skills, subagents.
 - `05-custom-tools` (~150 lines): selective built-in tools and custom tool registration.
+- `05-multimodel` (~120 lines): multi-model support with model pool and tier-based routing.
+- `06-v0.4.0-features` (~280 lines): v0.4.0 feature tour (offline-safe).
+- `08-askuserquestion` (~150 lines): AskUserQuestion tool integration with build-tag demos.
 
 ## 01-basic — minimal entry
 - Purpose: fastest way to see the SDK loop in action with one request/response.
@@ -79,20 +82,21 @@ go run ./examples/05-multimodel
 ```
 - See [05-multimodel/README.md](05-multimodel/README.md) for configuration examples and best practices.
 
-## 08-askuserquestion — AskUserQuestion tool
-- Key features: three independent demo programs showing different aspects of the AskUserQuestion tool.
+## 06-v0.4.0-features — v0.4.0 feature tour (offline-safe)
+- Key features: rules loader, token tracking, auto-compact, async bash, disallowed tools, OTEL (via build tag).
 - Run:
 ```bash
-# Demo 1: Tool-only test (no API key needed)
-go run ./examples/08-askuserquestion/demo_simple.go
-
-# Demo 2: LLM integration test (requires API key)
-source .env
-go run ./examples/08-askuserquestion/demo_llm.go
-
-# Demo 3: Full agent scenarios (requires API key)
-source .env
-go run ./examples/08-askuserquestion/main.go
+go run ./examples/06-v0.4.0-features
 ```
-- **Note**: This directory contains 3 independent programs with their own `main()` functions. Run each file separately, not with `go run .`
+- See [06-v0.4.0-features/README.md](06-v0.4.0-features/README.md) for details and online mode notes.
+
+## 08-askuserquestion — AskUserQuestion tool
+- Key features: three demo modes selected by build tags.
+- Run:
+```bash
+source .env
+(cd examples/08-askuserquestion && go run .)                 # full agent scenarios
+(cd examples/08-askuserquestion && go run -tags demo_llm .)  # LLM integration test
+(cd examples/08-askuserquestion && go run -tags demo_simple .) # tool-only test (no API key needed)
+```
 - See [08-askuserquestion/README.md](08-askuserquestion/README.md) for detailed usage and implementation patterns.

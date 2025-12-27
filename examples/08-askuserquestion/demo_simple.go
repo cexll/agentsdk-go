@@ -1,3 +1,5 @@
+//go:build demo_simple
+
 package main
 
 import (
@@ -6,7 +8,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/cexll/agentsdk-go/pkg/tool/builtin"
+	toolbuiltin "github.com/cexll/agentsdk-go/pkg/tool/builtin"
 )
 
 func main() {

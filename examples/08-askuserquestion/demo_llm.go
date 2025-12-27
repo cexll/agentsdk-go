@@ -1,3 +1,5 @@
+//go:build demo_llm
+
 package main
 
 import (

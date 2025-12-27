@@ -4,7 +4,10 @@
 
 这个目录包含 `AskUserQuestion` 工具的多个演示示例。
 
-**⚠️ 重要提示**: 这个目录包含 3 个独立的示例程序，每个都有自己的 `main()` 函数。请使用 `go run <文件名>` 单独运行，**不要**使用 `go build .` 或 `go run .`。
+本目录通过 build tag 提供 3 种演示模式：
+- 默认（无 tag）：`main.go`
+- `demo_simple`：纯工具测试（无需 API key）
+- `demo_llm`：LLM 集成测试（需要 API key）
 
 ## 🎯 Demo 文件
 
@@ -12,7 +15,7 @@
 **不需要 API Key**，直接测试工具本身的功能。
 
 ```bash
-go run demo_simple.go
+go run -tags demo_simple .
 ```
 
 展示：
@@ -26,7 +29,7 @@ go run demo_simple.go
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-your-key
-go run demo_llm.go
+go run -tags demo_llm .
 ```
 
 ### 3. main.go - 完整集成示例
@@ -34,7 +37,7 @@ go run demo_llm.go
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-your-key
-go run main.go
+go run .
 ```
 
 ## ⚠️ 当前发现
@@ -114,11 +117,11 @@ cd examples/08-askuserquestion
 go mod tidy
 
 # 运行无需 API Key 的demo
-go run demo_simple.go
+go run -tags demo_simple .
 
 # 运行需要 API Key 的demo
 export ANTHROPIC_API_KEY=sk-ant-xxx
-go run demo_llm.go
+go run -tags demo_llm .
 ```
 
 ## 📝 总结

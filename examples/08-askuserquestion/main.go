@@ -1,3 +1,5 @@
+//go:build !demo_simple && !demo_llm
+
 package main
 
 import (
@@ -59,7 +61,7 @@ func main() {
 	})
 	if err != nil {
 		log.Printf("场景 1 执行出错: %v\n", err)
-	} else {
+	} else if result1.Result != nil {
 		fmt.Printf("输出:\n%s\n", result1.Result.Output)
 	}
 	fmt.Println()
@@ -90,7 +92,7 @@ func main() {
 	})
 	if err != nil {
 		log.Printf("场景 2 执行出错: %v\n", err)
-	} else {
+	} else if result2.Result != nil {
 		fmt.Printf("输出:\n%s\n", result2.Result.Output)
 	}
 	fmt.Println()
@@ -114,7 +116,7 @@ func main() {
 	})
 	if err != nil {
 		log.Printf("场景 3 执行出错: %v\n", err)
-	} else {
+	} else if result3.Result != nil {
 		fmt.Printf("输出:\n%s\n", result3.Result.Output)
 	}
 	fmt.Println()
@@ -131,7 +133,7 @@ func main() {
 	})
 	if err != nil {
 		log.Printf("场景 4 执行出错: %v\n", err)
-	} else {
+	} else if result4.Result != nil {
 		fmt.Printf("输出:\n%s\n", result4.Result.Output)
 	}
 	fmt.Println()
