@@ -1066,19 +1066,18 @@ func (t *runtimeToolExecutor) Execute(ctx context.Context, call agent.ToolCall, 
 		return toolResult, hookErr
 	}
 
-	if t.history != nil {
-		t.history.Append(message.Message{
-			Role:    "tool",
-			Content: content,
-			ToolCalls: []message.ToolCall{{
-				ID:        call.ID,
-				Name:      call.Name,
-				Arguments: call.Input,
-			}},
-		})
+		if t.history != nil {
+			t.history.Append(message.Message{
+				Role: "tool",
+				ToolCalls: []message.ToolCall{{
+					ID:     call.ID,
+					Name:   call.Name,
+					Result: content,
+				}},
+			})
+		}
+		return toolResult, err
 	}
-	return toolResult, err
-}
 
 func coreToolUsePayload(call agent.ToolCall) coreevents.ToolUsePayload {
 	return coreevents.ToolUsePayload{Name: call.Name, Params: call.Input}

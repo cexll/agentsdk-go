@@ -14,6 +14,7 @@ type ToolCall struct {
 	ID        string
 	Name      string
 	Arguments map[string]any
+	Result    string
 }
 
 // CloneMessage performs a deep clone of a model.Message, duplicating nested
@@ -42,7 +43,7 @@ func cloneToolCalls(calls []ToolCall) []ToolCall {
 	}
 	out := make([]ToolCall, len(calls))
 	for i, call := range calls {
-		out[i] = ToolCall{ID: call.ID, Name: call.Name, Arguments: cloneMap(call.Arguments)}
+		out[i] = ToolCall{ID: call.ID, Name: call.Name, Arguments: cloneMap(call.Arguments), Result: call.Result}
 	}
 	return out
 }
