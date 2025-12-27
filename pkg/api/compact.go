@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
+	"time"
 
 	coreevents "github.com/cexll/agentsdk-go/pkg/core/events"
 	corehooks "github.com/cexll/agentsdk-go/pkg/core/hooks"
@@ -19,6 +21,19 @@ type CompactConfig struct {
 	Threshold     float64 `json:"threshold"`      // trigger ratio (default 0.8)
 	PreserveCount int     `json:"preserve_count"` // keep latest N messages (default 5)
 	SummaryModel  string  `json:"summary_model"`  // model tier/name used for summary
+
+	PreserveInitial  bool `json:"preserve_initial"`   // keep initial messages when compacting
+	InitialCount     int  `json:"initial_count"`      // keep first N messages from the compacted prefix
+	PreserveUserText bool `json:"preserve_user_text"` // keep recent user messages from the compacted prefix
+	UserTextTokens   int  `json:"user_text_tokens"`   // token budget for preserved user messages
+
+	MaxRetries    int           `json:"max_retries"`
+	RetryDelay    time.Duration `json:"retry_delay"`
+	FallbackModel string        `json:"fallback_model"`
+
+	// RolloutDir enables compact event persistence when non-empty.
+	// The directory is resolved relative to Options.ProjectRoot unless absolute.
+	RolloutDir string `json:"rollout_dir"`
 }
 
 const (
@@ -28,110 +43,7 @@ const (
 	summaryMaxTokens          = 1024
 )
 
-const summarySystemPrompt = `Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
-This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing development work without losing context.
-
-Before providing your final summary, wrap your analysis in ` + "`<analysis>`" + ` tags to organize your thoughts and ensure you've covered all necessary points. In your analysis process:
-
-1. Chronologically analyze each message and section of the conversation. For each section thoroughly identify:
-   - The user's explicit requests and intents
-   - Your approach to addressing the user's requests
-   - Key decisions, technical concepts and code patterns
-   - Specific details like:
-     - file names
-     - full code snippets
-     - function signatures
-     - file edits
-   - Errors that you ran into and how you fixed them
-   - Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.
-2. Double-check for technical accuracy and completeness, addressing each required element thoroughly.
-
-Your summary should include the following sections:
-
-1. **Primary Request and Intent**: Capture all of the user's explicit requests and intents in detail
-2. **Key Technical Concepts**: List all important technical concepts, technologies, and frameworks discussed.
-3. **Files and Code Sections**: Enumerate specific files and code sections examined, modified, or created. Pay special attention to the most recent messages and include full code snippets where applicable and include a summary of why this file read or edit is important.
-4. **Errors and fixes**: List all errors that you ran into, and how you fixed them. Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.
-5. **Problem Solving**: Document problems solved and any ongoing troubleshooting efforts.
-6. **All user messages**: List ALL user messages that are not tool results. These are critical for understanding the users' feedback and changing intent.
-6. **Pending Tasks**: Outline any pending tasks that you have explicitly been asked to work on.
-7. **Current Work**: Describe in detail precisely what was being worked on immediately before this summary request, paying special attention to the most recent messages from both user and assistant. Include file names and code snippets where applicable.
-8. **Optional Next Step**: List the next step that you will take that is related to the most recent work you were doing. IMPORTANT: ensure that this step is DIRECTLY in line with the user's most recent explicit requests, and the task you were working on immediately before this summary request. If your last task was concluded, then only list next steps if they are explicitly in line with the users request. Do not start on tangential requests or really old requests that were already completed without confirming with the user first.
-   If there is a next step, include direct quotes from the most recent conversation showing exactly what task you were working on and where you left off. This should be verbatim to ensure there's no drift in task interpretation.
-
-Here's an example of how your output should be structured:
-
-<example>
-
-<analysis>
-[Your thought process, ensuring all points are covered thoroughly and accurately]
-</analysis>
-
-<summary>
-1. Primary Request and Intent:
-   [Detailed description]
-
-2. Key Technical Concepts:
-   - [Concept 1]
-   - [Concept 2]
-   - [...]
-
-3. Files and Code Sections:
-   - [File Name 1]
-      - [Summary of why this file is important]
-      - [Summary of the changes made to this file, if any]
-      - [Important Code Snippet]
-   - [File Name 2]
-      - [Important Code Snippet]
-   - [...]
-
-4. Errors and fixes:
-    - [Detailed description of error 1]:
-      - [How you fixed the error]
-      - [User feedback on the error if any]
-    - [...]
-
-5. Problem Solving:
-   [Description of solved problems and ongoing troubleshooting]
-
-6. All user messages:
-    - [Detailed non tool use user message]
-    - [...]
-
-7. Pending Tasks:
-   - [Task 1]
-   - [Task 2]
-   - [...]
-
-8. Current Work:
-   [Precise description of current work]
-
-9. Optional Next Step:
-   [Optional Next step to take]
-
-</summary>
-
-</example>
-
-Please provide your summary based on the conversation so far, following this structure and ensuring precision and thoroughness in your response.
-
-There may be additional summarization instructions provided in the included context. If so, remember to follow these instructions when creating the above summary. Examples of instructions include:
-
-<example>
-
-## Compact Instructions
-
-When summarizing the conversation focus on typescript code changes and also remember the mistakes you made and how you fixed them.
-
-</example>
-
-<example>
-
-# Summary instructions
-
-When you are using compact - please focus on test output and code changes. Include file reads verbatim.
-
-</example>`
+var errNoCompaction = errors.New("api: nothing to compact")
 
 func (c CompactConfig) withDefaults() CompactConfig {
 	cfg := c
@@ -145,18 +57,36 @@ func (c CompactConfig) withDefaults() CompactConfig {
 		cfg.PreserveCount = 1
 	}
 	cfg.SummaryModel = strings.TrimSpace(cfg.SummaryModel)
+	if cfg.InitialCount < 0 {
+		cfg.InitialCount = 0
+	}
+	if cfg.PreserveInitial && cfg.InitialCount == 0 {
+		cfg.InitialCount = 1
+	}
+	if cfg.UserTextTokens < 0 {
+		cfg.UserTextTokens = 0
+	}
+	if cfg.MaxRetries < 0 {
+		cfg.MaxRetries = 0
+	}
+	if cfg.RetryDelay < 0 {
+		cfg.RetryDelay = 0
+	}
+	cfg.FallbackModel = strings.TrimSpace(cfg.FallbackModel)
+	cfg.RolloutDir = strings.TrimSpace(cfg.RolloutDir)
 	return cfg
 }
 
 type compactor struct {
-	cfg   CompactConfig
-	model model.Model
-	limit int
-	hooks *corehooks.Executor
-	mu    sync.Mutex
+	cfg     CompactConfig
+	model   model.Model
+	limit   int
+	hooks   *corehooks.Executor
+	rollout *RolloutWriter
+	mu      sync.Mutex
 }
 
-func newCompactor(cfg CompactConfig, mdl model.Model, tokenLimit int, hooks *corehooks.Executor) *compactor {
+func newCompactor(projectRoot string, cfg CompactConfig, mdl model.Model, tokenLimit int, hooks *corehooks.Executor) *compactor {
 	cfg = cfg.withDefaults()
 	if !cfg.Enabled {
 		return nil
@@ -165,35 +95,27 @@ func newCompactor(cfg CompactConfig, mdl model.Model, tokenLimit int, hooks *cor
 	if limit <= 0 {
 		limit = defaultClaudeContextLimit
 	}
+	rollout := newRolloutWriter(projectRoot, cfg.RolloutDir)
 	return &compactor{
-		cfg:   cfg,
-		model: mdl,
-		limit: limit,
-		hooks: hooks,
+		cfg:     cfg,
+		model:   mdl,
+		limit:   limit,
+		hooks:   hooks,
+		rollout: rollout,
 	}
 }
 
-func (c *compactor) estimateTokens(msgs []message.Message) int {
-	var counter message.NaiveCounter
-	total := 0
-	for _, msg := range msgs {
-		total += counter.Count(msg)
-	}
-	return total
-}
-
-func (c *compactor) shouldCompact(msgs []message.Message) bool {
+func (c *compactor) shouldCompact(msgCount, tokenCount int) bool {
 	if c == nil || !c.cfg.Enabled {
 		return false
 	}
-	if len(msgs) <= c.cfg.PreserveCount {
+	if msgCount <= c.cfg.PreserveCount {
 		return false
 	}
-	toks := c.estimateTokens(msgs)
-	if toks <= 0 || c.limit <= 0 {
+	if tokenCount <= 0 || c.limit <= 0 {
 		return false
 	}
-	ratio := float64(toks) / float64(c.limit)
+	ratio := float64(tokenCount) / float64(c.limit)
 	return ratio >= c.cfg.Threshold
 }
 
@@ -212,13 +134,18 @@ func (c *compactor) maybeCompact(ctx context.Context, hist *message.History, ses
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	msgCount := hist.Len()
+	tokenCount := hist.TokenCount()
+	if !c.shouldCompact(msgCount, tokenCount) {
+		return compactResult{}, false, nil
+	}
 	snapshot := hist.All()
-	if !c.shouldCompact(snapshot) {
+	if len(snapshot) <= c.cfg.PreserveCount {
 		return compactResult{}, false, nil
 	}
 
 	payload := coreevents.PreCompactPayload{
-		EstimatedTokens: c.estimateTokens(snapshot),
+		EstimatedTokens: tokenCount,
 		TokenLimit:      c.limit,
 		Threshold:       c.cfg.Threshold,
 		PreserveCount:   c.cfg.PreserveCount,
@@ -231,8 +158,11 @@ func (c *compactor) maybeCompact(ctx context.Context, hist *message.History, ses
 		return compactResult{}, false, nil
 	}
 
-	res, err := c.compact(ctx, hist, snapshot)
+	res, err := c.compact(ctx, hist, snapshot, tokenCount)
 	if err != nil {
+		if errors.Is(err, errNoCompaction) {
+			return compactResult{}, false, nil
+		}
 		return compactResult{}, false, err
 	}
 	c.postCompact(sessionID, res, recorder)
@@ -280,6 +210,11 @@ func (c *compactor) postCompact(sessionID string, res compactResult, recorder *h
 		c.hooks.Publish(evt)
 	}
 	c.record(recorder, evt)
+	if c.rollout != nil {
+		if err := c.rollout.WriteCompactEvent(sessionID, res); err != nil {
+			log.Printf("api: write compaction rollout: %v", err)
+		}
+	}
 }
 
 func (c *compactor) record(recorder *hookRecorder, evt coreevents.Event) {
@@ -289,7 +224,7 @@ func (c *compactor) record(recorder *hookRecorder, evt coreevents.Event) {
 	recorder.Record(evt)
 }
 
-func (c *compactor) compact(ctx context.Context, hist *message.History, snapshot []message.Message) (compactResult, error) {
+func (c *compactor) compact(ctx context.Context, hist *message.History, snapshot []message.Message, tokensBefore int) (compactResult, error) {
 	if c.model == nil {
 		return compactResult{}, errors.New("api: summary model is nil")
 	}
@@ -301,15 +236,67 @@ func (c *compactor) compact(ctx context.Context, hist *message.History, snapshot
 	older := snapshot[:cut]
 	kept := snapshot[cut:]
 
-	tokensBefore := c.estimateTokens(snapshot)
+	preservedPrefix := make([]bool, len(older))
+
+	var initial []message.Message
+	if c.cfg.PreserveInitial && c.cfg.InitialCount > 0 {
+		n := c.cfg.InitialCount
+		if n > len(older) {
+			n = len(older)
+		}
+		initial = make([]message.Message, 0, n)
+		for i := 0; i < n; i++ {
+			preservedPrefix[i] = true
+			initial = append(initial, message.CloneMessage(older[i]))
+		}
+	}
+
+	var userText []message.Message
+	if c.cfg.PreserveUserText && c.cfg.UserTextTokens > 0 {
+		var counter message.NaiveCounter
+		total := 0
+		indices := make([]int, 0)
+		for i := len(older) - 1; i >= 0; i-- {
+			if preservedPrefix[i] {
+				continue
+			}
+			if older[i].Role != "user" || strings.TrimSpace(older[i].Content) == "" {
+				continue
+			}
+			cost := counter.Count(older[i])
+			total += cost
+			indices = append(indices, i)
+			preservedPrefix[i] = true
+			if total >= c.cfg.UserTextTokens {
+				break
+			}
+		}
+		if len(indices) > 0 {
+			userText = make([]message.Message, 0, len(indices))
+			for j := len(indices) - 1; j >= 0; j-- {
+				userText = append(userText, message.CloneMessage(older[indices[j]]))
+			}
+		}
+	}
+
+	summarize := make([]message.Message, 0, len(older))
+	for i, msg := range older {
+		if preservedPrefix[i] {
+			continue
+		}
+		summarize = append(summarize, msg)
+	}
+	if len(summarize) == 0 {
+		return compactResult{}, errNoCompaction
+	}
 
 	req := model.Request{
-		Messages:  convertMessages(older),
+		Messages:  convertMessages(summarize),
 		System:    summarySystemPrompt,
 		Model:     c.cfg.SummaryModel,
 		MaxTokens: summaryMaxTokens,
 	}
-	resp, err := c.model.Complete(ctx, req)
+	resp, err := c.completeSummary(ctx, req)
 	if err != nil {
 		return compactResult{}, fmt.Errorf("api: compact summary: %w", err)
 	}
@@ -318,22 +305,63 @@ func (c *compactor) compact(ctx context.Context, hist *message.History, snapshot
 		summary = "对话摘要为空"
 	}
 
-	newMsgs := make([]message.Message, 0, 1+len(kept))
+	newMsgs := make([]message.Message, 0, len(initial)+1+len(userText)+len(kept))
+	newMsgs = append(newMsgs, message.CloneMessages(initial)...)
 	newMsgs = append(newMsgs, message.Message{
 		Role:    "system",
 		Content: fmt.Sprintf("对话摘要：\n%s", summary),
 	})
-	for _, msg := range kept {
-		newMsgs = append(newMsgs, message.CloneMessage(msg))
-	}
+	newMsgs = append(newMsgs, message.CloneMessages(userText)...)
+	newMsgs = append(newMsgs, message.CloneMessages(kept)...)
 	hist.Replace(newMsgs)
 
-	tokensAfter := c.estimateTokens(newMsgs)
+	tokensAfter := hist.TokenCount()
+	preservedMsgs := len(initial) + len(userText) + len(kept)
 	return compactResult{
 		summary:       summary,
 		originalMsgs:  len(snapshot),
-		preservedMsgs: len(kept),
+		preservedMsgs: preservedMsgs,
 		tokensBefore:  tokensBefore,
 		tokensAfter:   tokensAfter,
 	}, nil
+}
+
+func (c *compactor) completeSummary(ctx context.Context, req model.Request) (*model.Response, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if c == nil || c.model == nil {
+		return nil, errors.New("api: summary model is nil")
+	}
+	attempts := 1 + c.cfg.MaxRetries
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if attempt > 1 {
+			if delay := c.cfg.RetryDelay; delay > 0 {
+				timer := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return nil, ctx.Err()
+				case <-timer.C:
+				}
+			}
+			if fallback := strings.TrimSpace(c.cfg.FallbackModel); fallback != "" {
+				req.Model = fallback
+			}
+		}
+		resp, err := c.model.Complete(ctx, req)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if attempts > 1 {
+			log.Printf("api: compact summary attempt %d/%d failed: %v", attempt, attempts, err)
+		}
+	}
+	return nil, lastErr
 }

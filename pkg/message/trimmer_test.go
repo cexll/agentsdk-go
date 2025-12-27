@@ -1,6 +1,9 @@
 package message
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 type fixedCounter struct{ costs []int }
 
@@ -86,6 +89,11 @@ func TestNaiveCounterEdgeCases(t *testing.T) {
 			name: "enforces minimum token",
 			msg:  Message{},
 			want: 1,
+		},
+		{
+			name: "multibyte counts bytes",
+			msg:  Message{Role: "user", Content: strings.Repeat("汉", 8)},
+			want: 6, // len([]byte("汉")) == 3, so 8*3/4
 		},
 	}
 

@@ -143,7 +143,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 
 	recorder := defaultHookRecorder()
 	hooks := newHookExecutor(opts, recorder, settings)
-	compactor := newCompactor(opts.AutoCompact, opts.Model, opts.TokenLimit, hooks)
+	compactor := newCompactor(opts.ProjectRoot, opts.AutoCompact, opts.Model, opts.TokenLimit, hooks)
 
 	// Initialize tracer (noop without 'otel' build tag)
 	tracer, err := NewTracer(opts.OTEL)
@@ -416,6 +416,13 @@ func (rt *Runtime) prepare(ctx context.Context, req Request) (preparedRun, error
 	}
 
 	history := rt.histories.Get(normalized.SessionID)
+	recorder := defaultHookRecorder()
+
+	if rt.compactor != nil {
+		if _, _, err := rt.compactor.maybeCompact(ctx, history, normalized.SessionID, recorder); err != nil {
+			return preparedRun{}, err
+		}
+	}
 
 	activation := normalized.activationContext(prompt)
 
@@ -432,8 +439,6 @@ func (rt *Runtime) prepare(ctx context.Context, req Request) (preparedRun, error
 	}
 	prompt = promptAfterSkills
 	activation.Prompt = prompt
-
-	recorder := defaultHookRecorder()
 	whitelist := combineToolWhitelists(normalized.ToolWhitelist, nil)
 	return preparedRun{
 		ctx:            ctx,

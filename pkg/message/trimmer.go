@@ -5,7 +5,7 @@ type TokenCounter interface {
 	Count(msg Message) int
 }
 
-// NaiveCounter approximates tokens using character length. It intentionally
+// NaiveCounter approximates tokens using byte length. It intentionally
 // errs on the side of overestimation to avoid exceeding upstream context
 // limits.
 type NaiveCounter struct{}

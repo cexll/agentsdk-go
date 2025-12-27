@@ -15,6 +15,7 @@ type ToolCall struct {
 	ID        string
 	Name      string
 	Arguments map[string]any
+	Result    string // Result stores the execution result for this specific tool call
 }
 
 // ToolDefinition describes a callable function exposed to the model.

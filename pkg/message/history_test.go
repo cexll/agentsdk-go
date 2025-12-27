@@ -63,3 +63,48 @@ func TestHistoryConcurrentReaders(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+type countingCounter struct {
+	calls int
+	cost  int
+}
+
+func (c *countingCounter) Count(Message) int {
+	c.calls++
+	return c.cost
+}
+
+func TestHistoryTokenCountTracksAppendReplaceAndReset(t *testing.T) {
+	h := NewHistory()
+	counter := &countingCounter{cost: 2}
+	h.counter = counter
+
+	h.Append(Message{Role: "user", Content: "a"})
+	if counter.calls != 1 {
+		t.Fatalf("expected 1 counter call after append, got %d", counter.calls)
+	}
+	if got := h.TokenCount(); got != 2 {
+		t.Fatalf("TokenCount=%d, want %d", got, 2)
+	}
+
+	callsBefore := counter.calls
+	for i := 0; i < 10; i++ {
+		_ = h.TokenCount()
+	}
+	if counter.calls != callsBefore {
+		t.Fatalf("TokenCount should be O(1): counter calls changed from %d to %d", callsBefore, counter.calls)
+	}
+
+	h.Replace([]Message{{Role: "user"}, {Role: "assistant"}})
+	if counter.calls != callsBefore+2 {
+		t.Fatalf("expected Replace to call counter %d times, got %d", 2, counter.calls-callsBefore)
+	}
+	if got := h.TokenCount(); got != 4 {
+		t.Fatalf("TokenCount=%d, want %d", got, 4)
+	}
+
+	h.Reset()
+	if got := h.TokenCount(); got != 0 {
+		t.Fatalf("TokenCount=%d after Reset, want 0", got)
+	}
+}
