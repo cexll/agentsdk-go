@@ -25,6 +25,7 @@ const (
 	TokenUsage        EventType = "TokenUsage"
 	PermissionRequest EventType = "PermissionRequest"
 	ModelSelected     EventType = "ModelSelected"
+	MCPToolsChanged   EventType = "MCPToolsChanged"
 )
 
 // Event represents a single occurrence in the system. It is intentionally
@@ -148,4 +149,29 @@ type ModelSelectedPayload struct {
 	ToolName  string
 	ModelTier string
 	Reason    string
+}
+
+// MCPToolsChangedPayload is emitted when an MCP server notifies the client that
+// its tool list changed (notifications/tools/list_changed) and the client has
+// refreshed its tool snapshot.
+type MCPToolsChangedPayload struct {
+	// Server identifies the MCP server that triggered the update. Callers should
+	// treat this as an opaque identifier (often the connection spec/URL).
+	Server string
+	// SessionID is the MCP session identifier when available.
+	SessionID string
+	// Tools is the refreshed tool snapshot.
+	Tools []MCPToolDescriptor
+	// Error is set when refreshing tools failed.
+	Error string
+}
+
+// MCPToolDescriptor is a minimal copy of MCP tool metadata suitable for
+// reacting to list-changed notifications without depending on the MCP SDK.
+type MCPToolDescriptor struct {
+	Name         string
+	Description  string
+	InputSchema  any
+	OutputSchema any
+	Title        string
 }

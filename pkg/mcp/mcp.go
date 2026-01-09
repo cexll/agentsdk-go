@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	coreevents "github.com/cexll/agentsdk-go/pkg/core/events"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -60,6 +61,23 @@ const (
 	sseHintType       = "sse"
 )
 
+type connectConfig struct {
+	bus *coreevents.Bus
+}
+
+type ConnectOption func(*connectConfig)
+
+// WithEventBus publishes MCPToolsChanged events to the provided bus when the
+// connected MCP server sends notifications/tools/list_changed.
+func WithEventBus(bus *coreevents.Bus) ConnectOption {
+	return func(cfg *connectConfig) {
+		if cfg == nil {
+			return
+		}
+		cfg.bus = bus
+	}
+}
+
 // SpecClient is a backward-compatible client that dials an MCP server from a
 // spec string (e.g., "stdio://cmd" or "https://server") and exposes a pared
 // down API surface.
@@ -111,15 +129,38 @@ func NewSpecClient(spec string) (SpecClient, error) {
 // ConnectSession establishes a ClientSession using the same spec parsing logic
 // as the tool registry.
 func ConnectSession(ctx context.Context, spec string) (*ClientSession, error) {
+	return ConnectSessionWithOptions(ctx, spec)
+}
+
+// ConnectSessionWithOptions establishes a ClientSession using the same spec
+// parsing logic as the tool registry, optionally wiring MCP notifications into
+// the SDK event bus.
+func ConnectSessionWithOptions(ctx context.Context, spec string, opts ...ConnectOption) (*ClientSession, error) {
 	ctx = nonNilContext(ctx)
 	transport, err := buildSessionTransport(ctx, spec)
 	if err != nil {
 		return nil, fmt.Errorf("build transport: %w", err)
 	}
+
+	cfg := connectConfig{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+
+	serverID := strings.TrimSpace(spec)
 	client := NewClient(&Implementation{
 		Name:    mcpClientName,
 		Version: mcpClientVersion,
-	}, nil)
+	}, &ClientOptions{
+		ToolListChangedHandler: func(ctx context.Context, req *mcpsdk.ToolListChangedRequest) {
+			if req == nil || req.Session == nil {
+				return
+			}
+			publishToolsChanged(ctx, cfg.bus, serverID, req.Session)
+		},
+	})
 
 	dialCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -138,6 +179,57 @@ func ConnectSession(ctx context.Context, spec string) (*ClientSession, error) {
 		return nil, err
 	}
 	return session, nil
+}
+
+func publishToolsChanged(ctx context.Context, bus *coreevents.Bus, serverID string, session *ClientSession) {
+	tools, err := snapshotTools(ctx, session)
+
+	payload := coreevents.MCPToolsChangedPayload{
+		Server:    serverID,
+		SessionID: "",
+		Tools:     tools,
+	}
+	if session != nil {
+		payload.SessionID = session.ID()
+	}
+	if err != nil {
+		payload.Error = err.Error()
+	}
+
+	if bus == nil {
+		return
+	}
+	if err := bus.Publish(coreevents.Event{
+		Type:    coreevents.MCPToolsChanged,
+		Payload: payload,
+	}); err != nil {
+		return
+	}
+}
+
+func snapshotTools(ctx context.Context, session *ClientSession) ([]coreevents.MCPToolDescriptor, error) {
+	if session == nil {
+		return nil, fmt.Errorf("mcp session is nil")
+	}
+	ctx = nonNilContext(ctx)
+
+	var tools []coreevents.MCPToolDescriptor
+	for tool, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			return tools, err
+		}
+		if tool == nil {
+			continue
+		}
+		tools = append(tools, coreevents.MCPToolDescriptor{
+			Name:         tool.Name,
+			Description:  tool.Description,
+			InputSchema:  tool.InputSchema,
+			OutputSchema: tool.OutputSchema,
+			Title:        tool.Title,
+		})
+	}
+	return tools, nil
 }
 
 // EnsureSessionInitialized validates that the session completed MCP

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	coreevents "github.com/cexll/agentsdk-go/pkg/core/events"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -343,6 +344,168 @@ func TestCompatibilityWrappers(t *testing.T) {
 	}
 }
 
+func TestToolsListChangedNotificationPublishesEvent(t *testing.T) {
+	t.Parallel()
+
+	server := mcpsdk.NewServer(&Implementation{Name: "tools-changed", Version: "test"}, nil)
+	server.AddTool(&Tool{
+		Name:        "echo",
+		Description: "echo tool",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(context.Context, *mcpsdk.CallToolRequest) (*CallToolResult, error) {
+		return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil
+	})
+
+	handler := mcpsdk.NewSSEHandler(func(*http.Request) *mcpsdk.Server { return server }, nil)
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	bus := coreevents.NewBus()
+	t.Cleanup(bus.Close)
+
+	events := make(chan coreevents.MCPToolsChangedPayload, 1)
+	unsub := bus.Subscribe(coreevents.MCPToolsChanged, func(_ context.Context, evt coreevents.Event) {
+		payload, ok := evt.Payload.(coreevents.MCPToolsChangedPayload)
+		if !ok {
+			return
+		}
+		select {
+		case events <- payload:
+		default:
+		}
+	})
+	t.Cleanup(unsub)
+
+	session, err := ConnectSessionWithOptions(context.Background(), ts.URL, WithEventBus(bus))
+	if err != nil {
+		t.Fatalf("ConnectSessionWithOptions failed: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	server.AddTool(&Tool{
+		Name:        "sum",
+		Description: "sum tool",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(context.Context, *mcpsdk.CallToolRequest) (*CallToolResult, error) {
+		return &CallToolResult{Content: []Content{&TextContent{Text: "sum"}}}, nil
+	})
+
+	select {
+	case got := <-events:
+		if got.Server != ts.URL {
+			t.Fatalf("payload server=%q want %q", got.Server, ts.URL)
+		}
+		if got.Error != "" {
+			t.Fatalf("unexpected refresh error: %s", got.Error)
+		}
+		if !containsTool(got.Tools, "sum") {
+			t.Fatalf("refreshed tools missing sum: %#v", got.Tools)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for MCPToolsChanged")
+	}
+}
+
+func TestToolsListChangedNotificationMultipleServersIndependent(t *testing.T) {
+	t.Parallel()
+
+	newServer := func(name string) *mcpsdk.Server {
+		s := mcpsdk.NewServer(&Implementation{Name: name, Version: "test"}, nil)
+		s.AddTool(&Tool{
+			Name:        "echo",
+			Description: "echo tool",
+			InputSchema: map[string]any{"type": "object"},
+		}, func(context.Context, *mcpsdk.CallToolRequest) (*CallToolResult, error) {
+			return &CallToolResult{Content: []Content{&TextContent{Text: "ok"}}}, nil
+		})
+		return s
+	}
+
+	serverA := newServer("server-a")
+	serverB := newServer("server-b")
+
+	tsA := httptest.NewServer(mcpsdk.NewSSEHandler(func(*http.Request) *mcpsdk.Server { return serverA }, nil))
+	t.Cleanup(tsA.Close)
+	tsB := httptest.NewServer(mcpsdk.NewSSEHandler(func(*http.Request) *mcpsdk.Server { return serverB }, nil))
+	t.Cleanup(tsB.Close)
+
+	bus := coreevents.NewBus()
+	t.Cleanup(bus.Close)
+
+	type changed struct {
+		server string
+		tools  []coreevents.MCPToolDescriptor
+		err    string
+	}
+	events := make(chan changed, 2)
+	unsub := bus.Subscribe(coreevents.MCPToolsChanged, func(_ context.Context, evt coreevents.Event) {
+		payload, ok := evt.Payload.(coreevents.MCPToolsChangedPayload)
+		if !ok {
+			return
+		}
+		select {
+		case events <- changed{server: payload.Server, tools: payload.Tools, err: payload.Error}:
+		default:
+		}
+	})
+	t.Cleanup(unsub)
+
+	sessA, err := ConnectSessionWithOptions(context.Background(), tsA.URL, ConnectOption(nil), WithEventBus(bus))
+	if err != nil {
+		t.Fatalf("ConnectSessionWithOptions A failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sessA.Close() })
+
+	sessB, err := ConnectSessionWithOptions(context.Background(), tsB.URL, ConnectOption(nil), WithEventBus(bus))
+	if err != nil {
+		t.Fatalf("ConnectSessionWithOptions B failed: %v", err)
+	}
+	t.Cleanup(func() { _ = sessB.Close() })
+
+	serverA.AddTool(&Tool{
+		Name:        "toolA",
+		Description: "tool A",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(context.Context, *mcpsdk.CallToolRequest) (*CallToolResult, error) {
+		return &CallToolResult{Content: []Content{&TextContent{Text: "a"}}}, nil
+	})
+	serverB.AddTool(&Tool{
+		Name:        "toolB",
+		Description: "tool B",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(context.Context, *mcpsdk.CallToolRequest) (*CallToolResult, error) {
+		return &CallToolResult{Content: []Content{&TextContent{Text: "b"}}}, nil
+	})
+
+	seen := map[string]bool{}
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+
+	for len(seen) < 2 {
+		select {
+		case got := <-events:
+			if got.err != "" {
+				t.Fatalf("unexpected refresh error: %s", got.err)
+			}
+			switch got.server {
+			case tsA.URL:
+				if !containsTool(got.tools, "toolA") {
+					t.Fatalf("server A tools missing toolA: %#v", got.tools)
+				}
+			case tsB.URL:
+				if !containsTool(got.tools, "toolB") {
+					t.Fatalf("server B tools missing toolB: %#v", got.tools)
+				}
+			default:
+				t.Fatalf("unexpected server id %q", got.server)
+			}
+			seen[got.server] = true
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for MCPToolsChanged from both servers, seen=%v", seen)
+		}
+	}
+}
+
 func newEchoServer(t *testing.T) *mcpsdk.Server {
 	t.Helper()
 
@@ -418,4 +581,93 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func containsTool(tools []coreevents.MCPToolDescriptor, name string) bool {
+	for _, tool := range tools {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func TestWithEventBusNilConfigDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	bus := coreevents.NewBus()
+	t.Cleanup(bus.Close)
+
+	opt := WithEventBus(bus)
+	opt(nil)
+}
+
+func TestPublishToolsChangedNilSessionPublishesError(t *testing.T) {
+	t.Parallel()
+
+	bus := coreevents.NewBus()
+	t.Cleanup(bus.Close)
+
+	events := make(chan coreevents.MCPToolsChangedPayload, 1)
+	unsub := bus.Subscribe(coreevents.MCPToolsChanged, func(_ context.Context, evt coreevents.Event) {
+		payload, ok := evt.Payload.(coreevents.MCPToolsChangedPayload)
+		if !ok {
+			return
+		}
+		select {
+		case events <- payload:
+		default:
+		}
+	})
+	t.Cleanup(unsub)
+
+	publishToolsChanged(context.Background(), bus, "server-x", nil)
+
+	select {
+	case got := <-events:
+		if got.Server != "server-x" {
+			t.Fatalf("payload server=%q want %q", got.Server, "server-x")
+		}
+		if got.Error == "" {
+			t.Fatalf("expected refresh error, got empty")
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for MCPToolsChanged")
+	}
+}
+
+func TestPublishToolsChangedNilBusDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	session, cleanup := newInMemorySession(t)
+	defer cleanup()
+
+	publishToolsChanged(context.Background(), nil, "server-x", session)
+}
+
+func TestSnapshotToolsNilSession(t *testing.T) {
+	t.Parallel()
+
+	if _, err := snapshotTools(context.Background(), nil); err == nil {
+		t.Fatalf("expected error for nil session")
+	}
+}
+
+func TestEnsureSessionInitializedNilContext(t *testing.T) {
+	t.Parallel()
+
+	session, cleanup := newInMemorySession(t)
+	defer cleanup()
+
+	if err := EnsureSessionInitialized(nil, session); err == nil || !strings.Contains(err.Error(), "context is nil") { //nolint:staticcheck // SA1012: testing nil-context validation path
+		t.Fatalf("expected nil context error, got %v", err)
+	}
+}
+
+func TestNonNilContextNil(t *testing.T) {
+	t.Parallel()
+
+	if nonNilContext(nil) == nil { //nolint:staticcheck // SA1012: testing nil-context handling helper
+		t.Fatalf("expected non-nil context")
+	}
 }

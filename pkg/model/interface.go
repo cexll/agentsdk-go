@@ -27,14 +27,14 @@ type ToolDefinition struct {
 
 // Request drives a single model completion.
 type Request struct {
-	Messages           []Message
-	Tools              []ToolDefinition
-	System             string
-	Model              string
-	SessionID          string
-	MaxTokens          int
-	Temperature        *float64
-	EnablePromptCache  bool // Enable prompt caching for system and recent messages
+	Messages          []Message
+	Tools             []ToolDefinition
+	System            string
+	Model             string
+	SessionID         string
+	MaxTokens         int
+	Temperature       *float64
+	EnablePromptCache bool // Enable prompt caching for system and recent messages
 }
 
 // Usage reports token accounting for a completion.

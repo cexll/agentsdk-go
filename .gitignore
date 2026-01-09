@@ -32,6 +32,8 @@ examples/http/http
 .claude-trace
 !examples/http/.claude/
 !examples/http/.claude/settings.json
+!examples/05-embed/.claude/
+!examples/05-embed/.claude/settings.json
 
 tools.json
 .gocache

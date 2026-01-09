@@ -19,7 +19,7 @@ func TestFS_ReadFile_OSOnly(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	want := `{"source":"os"}`
-	if err := os.WriteFile(path, []byte(want), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(want), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
 
@@ -36,7 +36,7 @@ func TestFS_ReadFile_OSOnly(t *testing.T) {
 func TestFS_Open_OSOnly(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "file.txt")
-	if err := os.WriteFile(path, []byte("open-os"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("open-os"), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
 
@@ -62,7 +62,7 @@ func TestFS_Stat_OSOnly(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "stat.txt")
 	content := []byte("stat-os")
-	if err := os.WriteFile(path, content, 0o644); err != nil {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
 
@@ -82,10 +82,10 @@ func TestFS_ReadDir_OSOnly(t *testing.T) {
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b"), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
 
@@ -111,10 +111,10 @@ func TestFS_WalkDir_OSOnly(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "nested"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "root.txt"), []byte("root"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "root.txt"), []byte("root"), 0o600); err != nil {
 		t.Fatalf("write root: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "nested", "child.txt"), []byte("child"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "nested", "child.txt"), []byte("child"), 0o600); err != nil {
 		t.Fatalf("write child: %v", err)
 	}
 
@@ -342,7 +342,7 @@ func TestFS_ReadFile_OSOverridesEmbed(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(path, []byte(`{"source":"os"}`), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"source":"os"}`), 0o600); err != nil {
 		t.Fatalf("write os file: %v", err)
 	}
 
