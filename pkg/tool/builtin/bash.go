@@ -1,7 +1,6 @@
 package toolbuiltin
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -15,7 +14,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/cexll/agentsdk-go/pkg/middleware"
@@ -603,8 +601,8 @@ func generateAsyncTaskID() string {
 type bashOutputSpool struct {
 	threshold  int
 	outputPath string
-	stdout     *spoolWriter
-	stderr     *spoolWriter
+	stdout     *tool.SpoolWriter
+	stderr     *tool.SpoolWriter
 }
 
 func newBashOutputSpool(ctx context.Context, threshold int) *bashOutputSpool {
@@ -617,10 +615,10 @@ func newBashOutputSpool(ctx context.Context, threshold int) *bashOutputSpool {
 		threshold:  threshold,
 		outputPath: outputPath,
 	}
-	spool.stdout = newSpoolWriter(threshold, func() (*os.File, string, error) {
+	spool.stdout = tool.NewSpoolWriter(threshold, func() (io.WriteCloser, string, error) {
 		return openBashOutputFile(outputPath)
 	})
-	spool.stderr = newSpoolWriter(threshold, func() (*os.File, string, error) {
+	spool.stderr = tool.NewSpoolWriter(threshold, func() (io.WriteCloser, string, error) {
 		if err := ensureBashOutputDir(dir); err != nil {
 			return nil, "", err
 		}
@@ -654,7 +652,7 @@ func (s *bashOutputSpool) Finalize() (string, string, error) {
 	stderrCloseErr := s.stderr.Close()
 	closeErr := errors.Join(stdoutCloseErr, stderrCloseErr)
 
-	if s.stdout.truncated || s.stderr.truncated {
+	if s.stdout.Truncated() || s.stderr.Truncated() {
 		combined := combineOutput(s.stdout.String(), s.stderr.String())
 		return combined, "", closeErr
 	}
@@ -775,134 +773,6 @@ func appendStderr(out *os.File, stdoutLen int64, stderrPath, stderrText string) 
 		}
 	}
 	return nil
-}
-
-type spoolWriter struct {
-	mu          sync.Mutex
-	threshold   int
-	buf         bytes.Buffer
-	file        *os.File
-	path        string
-	fileFactory func() (*os.File, string, error)
-	truncated   bool
-	err         error
-}
-
-func newSpoolWriter(threshold int, fileFactory func() (*os.File, string, error)) *spoolWriter {
-	return &spoolWriter{threshold: threshold, fileFactory: fileFactory}
-}
-
-func (w *spoolWriter) WriteString(s string) (int, error) {
-	return w.Write([]byte(s))
-}
-
-func (w *spoolWriter) Write(p []byte) (int, error) {
-	if w == nil {
-		return len(p), nil
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if w.truncated {
-		return len(p), nil
-	}
-	if w.file != nil {
-		if _, err := w.file.Write(p); err != nil {
-			if w.err == nil {
-				w.err = err
-			}
-			w.truncated = true
-		}
-		return len(p), nil
-	}
-	if w.buf.Len()+len(p) <= w.threshold {
-		_, _ = w.buf.Write(p)
-		return len(p), nil
-	}
-
-	if w.fileFactory == nil {
-		if w.err == nil {
-			w.err = errors.New("bash spool: file factory is nil")
-		}
-		w.truncated = true
-		return len(p), nil
-	}
-
-	f, path, err := w.fileFactory()
-	if err != nil {
-		if w.err == nil {
-			w.err = err
-		}
-		w.truncated = true
-		return len(p), nil
-	}
-	if f == nil || strings.TrimSpace(path) == "" {
-		if f != nil {
-			_ = f.Close()
-		}
-		if w.err == nil {
-			w.err = errors.New("bash spool: output file is invalid")
-		}
-		w.truncated = true
-		return len(p), nil
-	}
-	if _, err := f.Write(w.buf.Bytes()); err != nil {
-		if w.err == nil {
-			w.err = err
-		}
-		_ = f.Close()
-		_ = os.Remove(path)
-		w.truncated = true
-		return len(p), nil
-	}
-	if _, err := f.Write(p); err != nil {
-		if w.err == nil {
-			w.err = err
-		}
-		_ = f.Close()
-		_ = os.Remove(path)
-		w.truncated = true
-		return len(p), nil
-	}
-	w.buf.Reset()
-	w.file = f
-	w.path = path
-	return len(p), nil
-}
-
-func (w *spoolWriter) Close() error {
-	if w == nil {
-		return nil
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.file == nil {
-		return w.err
-	}
-	closeErr := w.file.Close()
-	w.file = nil
-	return errors.Join(w.err, closeErr)
-}
-
-func (w *spoolWriter) Path() string {
-	if w == nil {
-		return ""
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.truncated {
-		return ""
-	}
-	return w.path
-}
-
-func (w *spoolWriter) String() string {
-	if w == nil {
-		return ""
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.buf.String()
 }
 
 func bashOutputBaseDir() string {

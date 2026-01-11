@@ -2,7 +2,6 @@ package toolbuiltin
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"os"
 	"path/filepath"
@@ -14,6 +13,7 @@ import (
 	"github.com/cexll/agentsdk-go/pkg/middleware"
 	"github.com/cexll/agentsdk-go/pkg/model"
 	"github.com/cexll/agentsdk-go/pkg/runtime/commands"
+	"github.com/cexll/agentsdk-go/pkg/tool"
 )
 
 func TestBashToolStreamExecuteEmitsIncrementally(t *testing.T) {
@@ -309,117 +309,6 @@ func TestBashToolExecuteSpoolsWhenCombinedOutputExceedsThreshold(t *testing.T) {
 	}
 }
 
-func TestBashSpoolWriterHandlesNilReceiver(t *testing.T) {
-	var w *spoolWriter
-	n, err := w.Write([]byte("x"))
-	if err != nil || n != 1 {
-		t.Fatalf("unexpected write result n=%d err=%v", n, err)
-	}
-}
-
-func TestBashSpoolWriterTruncatesAfterFactoryError(t *testing.T) {
-	w := newSpoolWriter(1, func() (*os.File, string, error) {
-		return nil, "", errors.New("boom")
-	})
-	_, _ = w.Write([]byte("a"))
-	_, _ = w.Write([]byte("b"))
-	if !w.truncated {
-		t.Fatalf("expected writer to truncate after spill failure")
-	}
-	if w.Path() != "" {
-		t.Fatalf("expected no path when truncated")
-	}
-	if w.String() != "a" {
-		t.Fatalf("expected buffered output to remain, got %q", w.String())
-	}
-}
-
-func TestBashSpoolWriterClosePropagatesFactoryError(t *testing.T) {
-	w := newSpoolWriter(1, func() (*os.File, string, error) {
-		return nil, "", errors.New("boom")
-	})
-	_, _ = w.Write([]byte("a"))
-	_, _ = w.Write([]byte("b"))
-	if err := w.Close(); err == nil || !strings.Contains(err.Error(), "boom") {
-		t.Fatalf("expected close to surface factory error, got %v", err)
-	}
-}
-
-func TestBashSpoolWriterTruncatesWhenFactoryNil(t *testing.T) {
-	w := newSpoolWriter(0, nil)
-	_, _ = w.Write([]byte("a"))
-	if !w.truncated {
-		t.Fatalf("expected writer to truncate when factory is nil")
-	}
-	if err := w.Close(); err == nil || !strings.Contains(err.Error(), "file factory") {
-		t.Fatalf("expected close to surface factory error, got %v", err)
-	}
-}
-
-func TestBashSpoolWriterTruncatesWhenFactoryReturnsEmptyPath(t *testing.T) {
-	dir := cleanTempDir(t)
-	w := newSpoolWriter(0, func() (*os.File, string, error) {
-		f, err := os.CreateTemp(dir, "badpath-*.tmp")
-		if err != nil {
-			return nil, "", err
-		}
-		return f, "   ", nil
-	})
-	_, _ = w.Write([]byte("a"))
-	if !w.truncated {
-		t.Fatalf("expected writer to truncate when factory returns empty path")
-	}
-	if err := w.Close(); err == nil || !strings.Contains(err.Error(), "invalid") {
-		t.Fatalf("expected close to surface invalid path error, got %v", err)
-	}
-}
-
-func TestBashSpoolWriterTruncatesAfterFileWriteFailure(t *testing.T) {
-	dir := cleanTempDir(t)
-	tmp, err := os.CreateTemp(dir, "ro-*.tmp")
-	if err != nil {
-		t.Fatalf("create temp file: %v", err)
-	}
-	path := tmp.Name()
-	if err := tmp.Close(); err != nil {
-		t.Fatalf("close temp file: %v", err)
-	}
-	ro, err := os.Open(path)
-	if err != nil {
-		t.Fatalf("open read-only file: %v", err)
-	}
-
-	w := newSpoolWriter(1, func() (*os.File, string, error) {
-		return ro, path, nil
-	})
-	_, _ = w.Write([]byte("a"))
-	_, _ = w.Write([]byte("b"))
-	if !w.truncated {
-		t.Fatalf("expected writer to truncate after file write failure")
-	}
-	if _, err := os.Stat(path); err == nil {
-		t.Fatalf("expected temp file to be removed")
-	}
-}
-
-func TestBashSpoolWriterTruncatesAfterClosedFile(t *testing.T) {
-	dir := cleanTempDir(t)
-	tmp, err := os.CreateTemp(dir, "closed-*.tmp")
-	if err != nil {
-		t.Fatalf("create temp file: %v", err)
-	}
-	if err := tmp.Close(); err != nil {
-		t.Fatalf("close temp file: %v", err)
-	}
-	w := newSpoolWriter(1, nil)
-	w.file = tmp
-
-	_, _ = w.Write([]byte("x"))
-	if !w.truncated {
-		t.Fatalf("expected writer to truncate after write to closed file")
-	}
-}
-
 func TestBashEnsureBashOutputDirRejectsEmpty(t *testing.T) {
 	if err := ensureBashOutputDir(" "); err == nil {
 		t.Fatalf("expected error for empty directory")
@@ -482,29 +371,12 @@ func TestBashOutputSpoolFinalizeNilReceiver(t *testing.T) {
 	}
 }
 
-func TestBashSpoolWriterWritesToOpenFile(t *testing.T) {
-	dir := cleanTempDir(t)
-	f, err := os.CreateTemp(dir, "open-*.tmp")
-	if err != nil {
-		t.Fatalf("create temp file: %v", err)
-	}
-	w := newSpoolWriter(1, nil)
-	w.file = f
-	_, _ = w.Write([]byte("hi"))
-	if w.truncated {
-		t.Fatalf("unexpected truncation after file write")
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("close file: %v", err)
-	}
-}
-
 func TestBashOutputSpoolFinalizeWhenTruncatedReturnsCombinedOutput(t *testing.T) {
-	stdout := newSpoolWriter(100, nil)
-	stderr := newSpoolWriter(100, nil)
+	stdout := tool.NewSpoolWriter(4, nil)
+	stderr := tool.NewSpoolWriter(100, nil)
 	_, _ = stdout.Write([]byte("out\n"))
+	_, _ = stdout.Write([]byte("x"))
 	_, _ = stderr.Write([]byte("err\n"))
-	stdout.truncated = true
 
 	spool := &bashOutputSpool{
 		threshold:  100,
@@ -514,8 +386,8 @@ func TestBashOutputSpoolFinalizeWhenTruncatedReturnsCombinedOutput(t *testing.T)
 	}
 
 	out, file, err := spool.Finalize()
-	if err != nil {
-		t.Fatalf("Finalize returned error: %v", err)
+	if err == nil {
+		t.Fatalf("expected Finalize to surface truncation error")
 	}
 	if file != "" {
 		t.Fatalf("expected no file, got %q", file)

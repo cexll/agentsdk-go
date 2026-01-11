@@ -370,8 +370,11 @@ func (s *historyStore) Get(id string) *message.History {
 		evicted = s.evictOldest()
 	}
 	s.mu.Unlock()
-	if evicted != "" && onEvict != nil {
-		onEvict(evicted)
+	if evicted != "" {
+		_ = cleanupToolOutputSessionDir(evicted)
+		if onEvict != nil {
+			onEvict(evicted)
+		}
 	}
 	return hist
 }
@@ -418,6 +421,13 @@ func bashOutputBaseDir() string {
 	return filepath.Join(string(filepath.Separator), "tmp", "agentsdk", "bash-output")
 }
 
+func toolOutputBaseDir() string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(os.TempDir(), "agentsdk", "tool-output")
+	}
+	return filepath.Join(string(filepath.Separator), "tmp", "agentsdk", "tool-output")
+}
+
 func bashOutputSessionDir(sessionID string) string {
 	base := strings.TrimSpace(bashOutputBaseDir())
 	if base == "" {
@@ -430,6 +440,22 @@ func cleanupBashOutputSessionDir(sessionID string) error {
 	dir := bashOutputSessionDir(sessionID)
 	if strings.TrimSpace(dir) == "" {
 		return errors.New("bash output directory is empty")
+	}
+	return os.RemoveAll(dir)
+}
+
+func toolOutputSessionDir(sessionID string) string {
+	base := strings.TrimSpace(toolOutputBaseDir())
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(base, sanitizePathComponent(sessionID))
+}
+
+func cleanupToolOutputSessionDir(sessionID string) error {
+	dir := toolOutputSessionDir(sessionID)
+	if strings.TrimSpace(dir) == "" {
+		return errors.New("tool output directory is empty")
 	}
 	return os.RemoveAll(dir)
 }

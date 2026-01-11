@@ -327,6 +327,39 @@ func TestSettingsLoader_FieldMerging(t *testing.T) {
 	}, got.ExtraKnownMarketplaces)
 }
 
+func TestSettingsLoader_ToolOutputConfigMerge(t *testing.T) {
+	t.Parallel()
+	projectRoot, projectPath, localPath := newIsolatedPaths(t)
+
+	writeSettingsFile(t, projectPath, Settings{
+		Model: "project",
+		ToolOutput: &ToolOutputConfig{
+			DefaultThresholdBytes: 100,
+			PerToolThresholdBytes: map[string]int{
+				"bash": 10,
+				"grep": 20,
+			},
+		},
+	})
+	writeSettingsFile(t, localPath, Settings{
+		ToolOutput: &ToolOutputConfig{
+			PerToolThresholdBytes: map[string]int{
+				"grep":      30,
+				"file_read": 40,
+			},
+		},
+	})
+
+	got := loadWithManagedPath(t, projectRoot, "", nil)
+	require.NotNil(t, got.ToolOutput)
+	require.Equal(t, 100, got.ToolOutput.DefaultThresholdBytes)
+	require.Equal(t, map[string]int{
+		"bash":      10,
+		"grep":      30,
+		"file_read": 40,
+	}, got.ToolOutput.PerToolThresholdBytes)
+}
+
 func TestSettingsLoader_MissingFiles(t *testing.T) {
 	t.Run("all layers missing returns defaults", func(t *testing.T) {
 		t.Parallel()

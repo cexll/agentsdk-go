@@ -28,6 +28,7 @@ type Settings struct {
 	ForceLoginOrgUUID          string                       `json:"forceLoginOrgUUID,omitempty"`          // Org UUID to auto-select during login when set.
 	Sandbox                    *SandboxConfig               `json:"sandbox,omitempty"`                    // Bash sandbox configuration.
 	BashOutput                 *BashOutputConfig            `json:"bashOutput,omitempty"`                 // Thresholds for spooling bash output to disk.
+	ToolOutput                 *ToolOutputConfig            `json:"toolOutput,omitempty"`                 // Thresholds for persisting large tool outputs to disk.
 	EnableAllProjectMCPServers *bool                        `json:"enableAllProjectMcpServers,omitempty"` // Auto-approve all project .mcp.json servers.
 	EnabledMCPJSONServers      []string                     `json:"enabledMcpjsonServers,omitempty"`      // Allowlist of project MCP servers.
 	DisabledMCPJSONServers     []string                     `json:"disabledMcpjsonServers,omitempty"`     // Denylist of project MCP servers.
@@ -85,6 +86,12 @@ type SandboxNetworkConfig struct {
 type BashOutputConfig struct {
 	SyncThresholdBytes  *int `json:"syncThresholdBytes,omitempty"`  // Spool sync output to disk after exceeding this many bytes.
 	AsyncThresholdBytes *int `json:"asyncThresholdBytes,omitempty"` // Spool async output to disk after exceeding this many bytes.
+}
+
+// ToolOutputConfig configures when tool output is persisted to disk.
+type ToolOutputConfig struct {
+	DefaultThresholdBytes int            `json:"defaultThresholdBytes,omitempty"` // Persist output to disk after exceeding this many bytes (0 = SDK default).
+	PerToolThresholdBytes map[string]int `json:"perToolThresholdBytes,omitempty"` // Optional per-tool thresholds keyed by canonical tool name.
 }
 
 // MarketplaceConfig holds plugin marketplace related fields.

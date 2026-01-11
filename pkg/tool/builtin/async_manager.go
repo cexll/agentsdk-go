@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cexll/agentsdk-go/pkg/tool"
 )
 
 const (
@@ -27,7 +30,7 @@ type AsyncTask struct {
 	Error     error
 
 	mu       sync.Mutex
-	output   *spoolWriter
+	output   *tool.SpoolWriter
 	consumed int
 	cancel   context.CancelFunc
 	cmd      *exec.Cmd
@@ -119,7 +122,7 @@ func (m *AsyncTaskManager) startWithContext(ctx context.Context, id, command, wo
 	if threshold <= 0 {
 		threshold = maxAsyncOutputLen
 	}
-	task.output = newSpoolWriter(threshold, func() (*os.File, string, error) {
+	task.output = tool.NewSpoolWriter(threshold, func() (io.WriteCloser, string, error) {
 		sessionID := bashSessionID(ctx)
 		dir := filepath.Join(bashOutputBaseDir(), sanitizePathComponent(sessionID))
 		outputPath := filepath.Join(dir, bashOutputFilename())

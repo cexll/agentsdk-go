@@ -39,6 +39,9 @@ func ValidateSettings(s *Settings) error {
 	// bash output spooling thresholds
 	errs = append(errs, validateBashOutputConfig(s.BashOutput)...)
 
+	// tool output persistence thresholds
+	errs = append(errs, validateToolOutputConfig(s.ToolOutput)...)
+
 	// mcp
 	errs = append(errs, validateMCPConfig(s.MCP, s.LegacyMCPServers)...)
 
@@ -235,6 +238,46 @@ func validateBashOutputConfig(cfg *BashOutputConfig) []error {
 			errs = append(errs, fmt.Errorf("bashOutput.asyncThresholdBytes must be >0, got %d", v))
 		}
 	}
+	return errs
+}
+
+func validateToolOutputConfig(cfg *ToolOutputConfig) []error {
+	if cfg == nil {
+		return nil
+	}
+
+	var errs []error
+	if cfg.DefaultThresholdBytes < 0 {
+		errs = append(errs, fmt.Errorf("toolOutput.defaultThresholdBytes must be >=0, got %d", cfg.DefaultThresholdBytes))
+	}
+
+	if len(cfg.PerToolThresholdBytes) == 0 {
+		return errs
+	}
+
+	names := make([]string, 0, len(cfg.PerToolThresholdBytes))
+	for name := range cfg.PerToolThresholdBytes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		raw := name
+		name = strings.TrimSpace(name)
+		if name == "" {
+			errs = append(errs, errors.New("toolOutput.perToolThresholdBytes has an empty tool name"))
+			continue
+		}
+		if raw != name {
+			errs = append(errs, fmt.Errorf("toolOutput.perToolThresholdBytes[%s] tool name must not include leading/trailing whitespace", raw))
+		}
+		if strings.ToLower(name) != name {
+			errs = append(errs, fmt.Errorf("toolOutput.perToolThresholdBytes[%s] tool name must be lowercase", raw))
+		}
+		if v := cfg.PerToolThresholdBytes[raw]; v <= 0 {
+			errs = append(errs, fmt.Errorf("toolOutput.perToolThresholdBytes[%s] must be >0, got %d", raw, v))
+		}
+	}
+
 	return errs
 }
 

@@ -17,6 +17,9 @@ type Call struct {
 	Path   string
 	Host   string
 	Usage  sandbox.ResourceUsage
+	// SessionID optionally ties the invocation to a long-lived runtime session.
+	// It is used for features like output persistence and is safe to leave empty.
+	SessionID string
 	// StreamSink optionally receives incremental output when the target tool
 	// supports streaming via StreamingTool. It is ignored by non-streaming
 	// tools to preserve backwards compatibility.

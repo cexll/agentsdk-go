@@ -178,4 +178,37 @@ func TestMergeBashOutputNilCases(t *testing.T) {
 	require.NotSame(t, lower.AsyncThresholdBytes, merged.AsyncThresholdBytes)
 }
 
+func TestMergeToolOutputDeepCopyAndOverrides(t *testing.T) {
+	lower := &Settings{
+		ToolOutput: &ToolOutputConfig{
+			DefaultThresholdBytes: 100,
+			PerToolThresholdBytes: map[string]int{
+				"bash":      10,
+				"file_read": 20,
+			},
+		},
+	}
+	higher := &Settings{
+		ToolOutput: &ToolOutputConfig{
+			DefaultThresholdBytes: 200,
+			PerToolThresholdBytes: map[string]int{
+				"bash": 15,
+				"grep": 30,
+			},
+		},
+	}
+
+	merged := MergeSettings(lower, higher)
+	require.NotNil(t, merged)
+	require.NotNil(t, merged.ToolOutput)
+	require.Equal(t, 200, merged.ToolOutput.DefaultThresholdBytes)
+	require.Equal(t, map[string]int{
+		"bash":      15,
+		"file_read": 20,
+		"grep":      30,
+	}, merged.ToolOutput.PerToolThresholdBytes)
+	require.NotSame(t, lower.ToolOutput, merged.ToolOutput)
+	require.NotSame(t, lower.ToolOutput.PerToolThresholdBytes, merged.ToolOutput.PerToolThresholdBytes)
+}
+
 func intPtr(v int) *int { return &v }

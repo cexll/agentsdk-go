@@ -143,7 +143,7 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if err := registerMCPServers(ctx, registry, sbox, mcpServers); err != nil {
 		return nil, err
 	}
-	executor := tool.NewExecutor(registry, sbox)
+	executor := tool.NewExecutor(registry, sbox).WithOutputPersister(tool.NewOutputPersister())
 
 	recorder := defaultHookRecorder()
 	hooks := newHookExecutor(opts, recorder, settings)
@@ -340,6 +340,9 @@ func (rt *Runtime) Close() error {
 				if cleanupErr := cleanupBashOutputSessionDir(sessionID); cleanupErr != nil {
 					log.Printf("api: session %q temp cleanup failed: %v", sessionID, cleanupErr)
 				}
+				if cleanupErr := cleanupToolOutputSessionDir(sessionID); cleanupErr != nil {
+					log.Printf("api: session %q tool output cleanup failed: %v", sessionID, cleanupErr)
+				}
 			}
 		}
 		if rt.rulesLoader != nil {
@@ -522,12 +525,13 @@ func (rt *Runtime) runAgentWithMiddleware(prep preparedRun, extras ...middleware
 	}
 
 	toolExec := &runtimeToolExecutor{
-		executor: rt.executor,
-		hooks:    &runtimeHookAdapter{executor: rt.hooks, recorder: prep.recorder},
-		history:  prep.history,
-		allow:    prep.toolWhitelist,
-		root:     rt.sbRoot,
-		host:     "localhost",
+		executor:  rt.executor,
+		hooks:     &runtimeHookAdapter{executor: rt.hooks, recorder: prep.recorder},
+		history:   prep.history,
+		allow:     prep.toolWhitelist,
+		root:      rt.sbRoot,
+		host:      "localhost",
+		sessionID: prep.normalized.SessionID,
 	}
 
 	chainItems := make([]middleware.Middleware, 0, len(rt.opts.Middleware)+len(extras))
@@ -1013,12 +1017,13 @@ func (m *conversationModel) Generate(ctx context.Context, _ *agent.Context) (*ag
 }
 
 type runtimeToolExecutor struct {
-	executor *tool.Executor
-	hooks    *runtimeHookAdapter
-	history  *message.History
-	allow    map[string]struct{}
-	root     string
-	host     string
+	executor  *tool.Executor
+	hooks     *runtimeHookAdapter
+	history   *message.History
+	allow     map[string]struct{}
+	root      string
+	host      string
+	sessionID string
 }
 
 func (t *runtimeToolExecutor) measureUsage() sandbox.ResourceUsage {
@@ -1065,11 +1070,12 @@ func (t *runtimeToolExecutor) Execute(ctx context.Context, call agent.ToolCall, 
 	}
 
 	callSpec := tool.Call{
-		Name:   call.Name,
-		Params: call.Input,
-		Path:   t.root,
-		Host:   t.host,
-		Usage:  t.measureUsage(),
+		Name:      call.Name,
+		Params:    call.Input,
+		Path:      t.root,
+		Host:      t.host,
+		Usage:     t.measureUsage(),
+		SessionID: t.sessionID,
 	}
 	if emit := streamEmitFromContext(ctx); emit != nil {
 		callSpec.StreamSink = func(chunk string, isStderr bool) {
@@ -1093,6 +1099,9 @@ func (t *runtimeToolExecutor) Execute(ctx context.Context, call agent.ToolCall, 
 	if result != nil && result.Result != nil {
 		toolResult.Output = result.Result.Output
 		meta["data"] = result.Result.Data
+		if result.Result.OutputRef != nil {
+			meta["output_ref"] = result.Result.OutputRef
+		}
 		content = result.Result.Output
 	}
 	if err != nil {

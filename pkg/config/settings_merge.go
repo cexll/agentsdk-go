@@ -56,6 +56,7 @@ func MergeSettings(lower, higher *Settings) *Settings {
 	}
 	result.Sandbox = mergeSandbox(lower.Sandbox, higher.Sandbox)
 	result.BashOutput = mergeBashOutput(lower.BashOutput, higher.BashOutput)
+	result.ToolOutput = mergeToolOutput(lower.ToolOutput, higher.ToolOutput)
 	if higher.EnableAllProjectMCPServers != nil {
 		result.EnableAllProjectMCPServers = boolPtr(*higher.EnableAllProjectMCPServers)
 	}
@@ -199,12 +200,44 @@ func mergeBashOutput(lower, higher *BashOutputConfig) *BashOutputConfig {
 	return out
 }
 
+func mergeToolOutput(lower, higher *ToolOutputConfig) *ToolOutputConfig {
+	if lower == nil && higher == nil {
+		return nil
+	}
+	if lower == nil {
+		return cloneToolOutput(higher)
+	}
+	if higher == nil {
+		return cloneToolOutput(lower)
+	}
+	out := cloneToolOutput(lower)
+	if higher.DefaultThresholdBytes != 0 {
+		out.DefaultThresholdBytes = higher.DefaultThresholdBytes
+	}
+	out.PerToolThresholdBytes = mergeIntMap(lower.PerToolThresholdBytes, higher.PerToolThresholdBytes)
+	return out
+}
+
 // mergeMaps merges string maps; higher values override lower keys.
 func mergeMaps(lower, higher map[string]string) map[string]string {
 	if len(lower) == 0 && len(higher) == 0 {
 		return nil
 	}
 	out := make(map[string]string, len(lower)+len(higher))
+	for k, v := range lower {
+		out[k] = v
+	}
+	for k, v := range higher {
+		out[k] = v
+	}
+	return out
+}
+
+func mergeIntMap(lower, higher map[string]int) map[string]int {
+	if len(lower) == 0 && len(higher) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(lower)+len(higher))
 	for k, v := range lower {
 		out[k] = v
 	}
@@ -383,6 +416,7 @@ func cloneSettings(src *Settings) *Settings {
 	out.StatusLine = cloneStatusLine(src.StatusLine)
 	out.Sandbox = cloneSandbox(src.Sandbox)
 	out.BashOutput = cloneBashOutput(src.BashOutput)
+	out.ToolOutput = cloneToolOutput(src.ToolOutput)
 	out.EnableAllProjectMCPServers = cloneBoolPtr(src.EnableAllProjectMCPServers)
 	out.EnabledMCPJSONServers = mergeStringSlices(nil, src.EnabledMCPJSONServers)
 	out.DisabledMCPJSONServers = mergeStringSlices(nil, src.DisabledMCPJSONServers)
@@ -471,6 +505,15 @@ func cloneBashOutput(src *BashOutputConfig) *BashOutputConfig {
 	} else {
 		out.AsyncThresholdBytes = nil
 	}
+	return &out
+}
+
+func cloneToolOutput(src *ToolOutputConfig) *ToolOutputConfig {
+	if src == nil {
+		return nil
+	}
+	out := *src
+	out.PerToolThresholdBytes = mergeIntMap(nil, src.PerToolThresholdBytes)
 	return &out
 }
 

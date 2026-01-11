@@ -60,6 +60,19 @@ func (s *streamingStubTool) StreamExecute(ctx context.Context, params map[string
 	return &ToolResult{Success: true, Output: "stream"}, nil
 }
 
+type fixedOutputTool struct {
+	name   string
+	output string
+	ref    *OutputRef
+}
+
+func (f *fixedOutputTool) Name() string        { return f.name }
+func (f *fixedOutputTool) Description() string { return "fixed output" }
+func (f *fixedOutputTool) Schema() *JSONSchema { return nil }
+func (f *fixedOutputTool) Execute(context.Context, map[string]interface{}) (*ToolResult, error) {
+	return &ToolResult{Success: true, Output: f.output, OutputRef: f.ref}, nil
+}
+
 type fakeFSPolicy struct {
 	last string
 	err  error
@@ -214,6 +227,48 @@ func TestWithSandboxReturnsCopy(t *testing.T) {
 	}
 }
 
+func TestWithSandboxNilReceiverInitialisesExecutor(t *testing.T) {
+	var exec *Executor
+	copy := exec.WithSandbox(sandbox.NewManager(nil, nil, nil))
+	if copy == nil || copy.Registry() == nil {
+		t.Fatalf("expected non-nil executor with registry")
+	}
+}
+
+func TestExecutorExecuteAllRespectsContextCancel(t *testing.T) {
+	reg := NewRegistry()
+	tool := &stubTool{name: "echo"}
+	if err := reg.Register(tool); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	exec := NewExecutor(reg, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	results := exec.ExecuteAll(ctx, []Call{{Name: "echo"}})
+	if len(results) != 1 {
+		t.Fatalf("expected one result, got %d", len(results))
+	}
+	if !errors.Is(results[0].Err, context.Canceled) {
+		t.Fatalf("expected context cancellation error, got %v", results[0].Err)
+	}
+	if atomic.LoadInt32(&tool.called) != 0 {
+		t.Fatalf("tool should not run when context is cancelled")
+	}
+}
+
+func TestExecutorExecuteAllNilReceiverPropagatesError(t *testing.T) {
+	var exec *Executor
+	results := exec.ExecuteAll(context.Background(), []Call{{Name: "echo"}})
+	if len(results) != 1 {
+		t.Fatalf("expected one result, got %d", len(results))
+	}
+	if results[0].Err == nil || !strings.Contains(results[0].Err.Error(), "not initialised") {
+		t.Fatalf("expected initialisation error, got %v", results[0].Err)
+	}
+}
+
 func TestCloneValueDeepCopiesSlice(t *testing.T) {
 	original := []any{map[string]any{"a": 1}}
 	clonedAny := cloneValue(original)
@@ -232,6 +287,133 @@ func TestCloneValueDeepCopiesSlice(t *testing.T) {
 	}
 	if v, ok := origElem["a"].(int); !ok || v != 1 {
 		t.Fatalf("original mutated: %#v", original)
+	}
+}
+
+func TestExecutorPersistsLargeToolOutput(t *testing.T) {
+	reg := NewRegistry()
+	impl := &fixedOutputTool{name: "echo", output: strings.Repeat("x", 11)}
+	if err := reg.Register(impl); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	persister := &OutputPersister{BaseDir: t.TempDir(), DefaultThresholdBytes: 10}
+	exec := NewExecutor(reg, nil).WithOutputPersister(persister)
+
+	cr, err := exec.Execute(context.Background(), Call{Name: "echo", SessionID: "sess"})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if cr == nil || cr.Result == nil {
+		t.Fatalf("expected tool result")
+	}
+	if cr.Result.OutputRef == nil || strings.TrimSpace(cr.Result.OutputRef.Path) == "" {
+		t.Fatalf("expected output ref, got %+v", cr.Result.OutputRef)
+	}
+	if cr.Result.Output == impl.output {
+		t.Fatalf("expected output to be replaced by reference")
+	}
+	data, err := os.ReadFile(cr.Result.OutputRef.Path)
+	if err != nil {
+		t.Fatalf("read persisted output: %v", err)
+	}
+	if string(data) != impl.output {
+		t.Fatalf("unexpected persisted output %q", string(data))
+	}
+}
+
+func TestExecutorPersisterSkipsWhenOutputRefAlreadySet(t *testing.T) {
+	reg := NewRegistry()
+	ref := &OutputRef{Path: "/tmp/already", SizeBytes: 1, Truncated: false}
+	impl := &fixedOutputTool{name: "echo", output: strings.Repeat("x", 11), ref: ref}
+	if err := reg.Register(impl); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	persister := &OutputPersister{BaseDir: t.TempDir(), DefaultThresholdBytes: 1}
+	exec := NewExecutor(reg, nil).WithOutputPersister(persister)
+
+	cr, err := exec.Execute(context.Background(), Call{Name: "echo", SessionID: "sess"})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if cr == nil || cr.Result == nil {
+		t.Fatalf("expected tool result")
+	}
+	if cr.Result.OutputRef != ref {
+		t.Fatalf("expected output ref to be preserved, got %+v", cr.Result.OutputRef)
+	}
+}
+
+func TestExecutorIgnoresPersisterFailure(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "not-a-dir")
+	if err := os.WriteFile(base, []byte("file"), 0o600); err != nil {
+		t.Fatalf("write file base: %v", err)
+	}
+
+	reg := NewRegistry()
+	impl := &fixedOutputTool{name: "echo", output: strings.Repeat("x", 11)}
+	if err := reg.Register(impl); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	persister := &OutputPersister{BaseDir: base, DefaultThresholdBytes: 1}
+	exec := NewExecutor(reg, nil).WithOutputPersister(persister)
+
+	cr, err := exec.Execute(context.Background(), Call{Name: "echo", SessionID: "sess"})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if cr == nil || cr.Result == nil {
+		t.Fatalf("expected tool result")
+	}
+	if cr.Result.Output != impl.output {
+		t.Fatalf("expected output to remain inline, got %q", cr.Result.Output)
+	}
+	if cr.Result.OutputRef != nil {
+		t.Fatalf("expected OutputRef nil on persister failure, got %+v", cr.Result.OutputRef)
+	}
+}
+
+func TestExecutorPersisterIsolatesDirectoriesPerToolName(t *testing.T) {
+	base := t.TempDir()
+	persister := &OutputPersister{BaseDir: base, DefaultThresholdBytes: 1}
+
+	reg := NewRegistry()
+	echoTool := &fixedOutputTool{name: "echo", output: "echo-out"}
+	grepTool := &fixedOutputTool{name: "grep", output: "grep-out"}
+	if err := reg.Register(echoTool); err != nil {
+		t.Fatalf("register echo: %v", err)
+	}
+	if err := reg.Register(grepTool); err != nil {
+		t.Fatalf("register grep: %v", err)
+	}
+
+	exec := NewExecutor(reg, nil).WithOutputPersister(persister)
+	echoRes, err := exec.Execute(context.Background(), Call{Name: "echo", SessionID: "sess"})
+	if err != nil {
+		t.Fatalf("execute echo: %v", err)
+	}
+	grepRes, err := exec.Execute(context.Background(), Call{Name: "grep", SessionID: "sess"})
+	if err != nil {
+		t.Fatalf("execute grep: %v", err)
+	}
+	if echoRes == nil || echoRes.Result == nil || echoRes.Result.OutputRef == nil {
+		t.Fatalf("expected echo OutputRef, got %+v", echoRes)
+	}
+	if grepRes == nil || grepRes.Result == nil || grepRes.Result.OutputRef == nil {
+		t.Fatalf("expected grep OutputRef, got %+v", grepRes)
+	}
+	echoDir := filepath.Dir(echoRes.Result.OutputRef.Path)
+	grepDir := filepath.Dir(grepRes.Result.OutputRef.Path)
+	if echoDir == grepDir {
+		t.Fatalf("expected different tool directories, got %q", echoDir)
+	}
+	wantEchoPrefix := filepath.Join(base, "sess", "echo") + string(filepath.Separator)
+	if !strings.HasPrefix(echoRes.Result.OutputRef.Path, wantEchoPrefix) {
+		t.Fatalf("expected echo path under %q, got %q", wantEchoPrefix, echoRes.Result.OutputRef.Path)
+	}
+	wantGrepPrefix := filepath.Join(base, "sess", "grep") + string(filepath.Separator)
+	if !strings.HasPrefix(grepRes.Result.OutputRef.Path, wantGrepPrefix) {
+		t.Fatalf("expected grep path under %q, got %q", wantGrepPrefix, grepRes.Result.OutputRef.Path)
 	}
 }
 

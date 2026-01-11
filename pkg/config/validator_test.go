@@ -10,6 +10,10 @@ func TestValidateSettingsSuccess(t *testing.T) {
 	httpPort, socksPort := 8080, 1080
 	s := &Settings{
 		Model: "claude-3",
+		ToolOutput: &ToolOutputConfig{
+			DefaultThresholdBytes: 0,
+			PerToolThresholdBytes: map[string]int{"bash": 1},
+		},
 		BashOutput: &BashOutputConfig{
 			SyncThresholdBytes:  intPtr(30_000),
 			AsyncThresholdBytes: intPtr(1024 * 1024),
@@ -40,6 +44,24 @@ func TestValidateSettingsSuccess(t *testing.T) {
 	}
 
 	require.NoError(t, ValidateSettings(s))
+}
+
+func TestValidateToolOutputConfigRejectsInvalidThresholds(t *testing.T) {
+	s := &Settings{
+		Model: "claude-3",
+		ToolOutput: &ToolOutputConfig{
+			DefaultThresholdBytes: -1,
+			PerToolThresholdBytes: map[string]int{
+				"Bash": 0,
+			},
+		},
+	}
+
+	err := ValidateSettings(s)
+	require.Error(t, err)
+	msg := err.Error()
+	require.Contains(t, msg, "toolOutput.defaultThresholdBytes")
+	require.Contains(t, msg, "toolOutput.perToolThresholdBytes")
 }
 
 func TestValidateSettingsAggregatesErrors(t *testing.T) {

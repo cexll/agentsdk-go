@@ -169,6 +169,9 @@ func TestNonNilContext(t *testing.T) {
 	if got := nonNilContext(context.TODO()); got == nil {
 		t.Fatalf("TODO context replaced unexpectedly")
 	}
+	if got := nonNilContext(nil); got == nil {
+		t.Fatalf("nil context should be replaced")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if got := nonNilContext(ctx); got != ctx {

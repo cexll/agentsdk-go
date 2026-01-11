@@ -162,6 +162,37 @@ func TestRuntimeToolExecutor_ErrorHistory(t *testing.T) {
 	}
 }
 
+func TestRuntimeToolExecutor_PropagatesOutputRef(t *testing.T) {
+	reg := tool.NewRegistry()
+	ref := &tool.OutputRef{Path: "/tmp/out", SizeBytes: 123, Truncated: true}
+	impl := &outputRefTool{ref: ref}
+	if err := reg.Register(impl); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+	exec := tool.NewExecutor(reg, nil)
+	rtExec := &runtimeToolExecutor{
+		executor: exec,
+		hooks:    &runtimeHookAdapter{},
+		host:     "localhost",
+	}
+
+	call := agent.ToolCall{ID: "c1", Name: impl.Name(), Input: map[string]any{}}
+	res, err := rtExec.Execute(context.Background(), call, agent.NewContext())
+	if err != nil {
+		t.Fatalf("execute tool: %v", err)
+	}
+	if res.Output != "ok" {
+		t.Fatalf("unexpected output: %q", res.Output)
+	}
+	got, ok := res.Metadata["output_ref"].(*tool.OutputRef)
+	if !ok || got == nil {
+		t.Fatalf("expected output_ref metadata, got %+v", res.Metadata)
+	}
+	if got.Path != ref.Path || got.SizeBytes != ref.SizeBytes || got.Truncated != ref.Truncated {
+		t.Fatalf("output_ref mismatch: got=%+v want=%+v", got, ref)
+	}
+}
+
 func TestNewRejectsDisallowedMCPServer(t *testing.T) {
 	root := newClaudeProject(t)
 	mdl := &stubModel{responses: []*model.Response{{Message: model.Message{Role: "assistant", Content: "ok"}}}}
@@ -368,6 +399,17 @@ func (e *echoTool) Execute(ctx context.Context, params map[string]interface{}) (
 	e.calls++
 	text := params["text"]
 	return &tool.ToolResult{Output: fmt.Sprint(text)}, nil
+}
+
+type outputRefTool struct {
+	ref *tool.OutputRef
+}
+
+func (o *outputRefTool) Name() string             { return "output_ref" }
+func (o *outputRefTool) Description() string      { return "returns tool output ref" }
+func (o *outputRefTool) Schema() *tool.JSONSchema { return &tool.JSONSchema{Type: "object"} }
+func (o *outputRefTool) Execute(context.Context, map[string]interface{}) (*tool.ToolResult, error) {
+	return &tool.ToolResult{Success: true, Output: "ok", OutputRef: o.ref}, nil
 }
 
 type failingTool struct {
