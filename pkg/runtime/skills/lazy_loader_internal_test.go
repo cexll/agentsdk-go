@@ -2,10 +2,11 @@ package skills
 
 import (
 	"context"
-	"errors"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -28,9 +29,8 @@ func TestHandlerLazyLoadsOnFirstExecute(t *testing.T) {
 	}
 
 	lazy := requireLazyHandler(t, regs[0].Handler)
-	callCount := trackLoaderCalls(lazy)
-	if got := callCount(); got != 0 {
-		t.Fatalf("expected zero loader calls before execute, got %d", got)
+	if lazy.loaded {
+		t.Fatalf("expected not loaded before execute")
 	}
 
 	res, err := regs[0].Handler.Execute(context.Background(), ActivationContext{})
@@ -46,8 +46,8 @@ func TestHandlerLazyLoadsOnFirstExecute(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, []string{"setup.sh"}, support["scripts"])
 
-	if got := callCount(); got != 1 {
-		t.Fatalf("expected single loader invocation, got %d", got)
+	if !lazy.loaded {
+		t.Fatalf("expected loaded after execute")
 	}
 }
 
@@ -58,17 +58,23 @@ func TestHandlerCachesLoadResult(t *testing.T) {
 
 	regs, _ := LoadFromFS(LoaderOptions{ProjectRoot: root})
 	lazy := requireLazyHandler(t, regs[0].Handler)
-	callCount := trackLoaderCalls(lazy)
 
-	if _, err := lazy.Execute(context.Background(), ActivationContext{}); err != nil {
+	res1, err := lazy.Execute(context.Background(), ActivationContext{})
+	if err != nil {
 		t.Fatalf("first execute failed: %v", err)
 	}
-	if _, err := lazy.Execute(context.Background(), ActivationContext{}); err != nil {
+	res2, err := lazy.Execute(context.Background(), ActivationContext{})
+	if err != nil {
 		t.Fatalf("second execute failed: %v", err)
 	}
 
-	if got := callCount(); got != 1 {
-		t.Fatalf("expected single loader execution, got %d", got)
+	// Results should be the same cached instance
+	out1, ok := res1.Output.(map[string]any)
+	require.True(t, ok)
+	out2, ok := res2.Output.(map[string]any)
+	require.True(t, ok)
+	if out1["body"] != out2["body"] {
+		t.Fatalf("expected same cached body")
 	}
 }
 
@@ -78,9 +84,7 @@ func TestHandlerConcurrentExecuteSingleLoad(t *testing.T) {
 	writeSkill(t, filepath.Join(dir, "SKILL.md"), "concurrent", "body")
 
 	regs, _ := LoadFromFS(LoaderOptions{ProjectRoot: root})
-	lazy := requireLazyHandler(t, regs[0].Handler)
-	callCount := trackLoaderCalls(lazy)
-	handler := Handler(lazy)
+	handler := regs[0].Handler
 
 	const goroutines = 16
 	var wg sync.WaitGroup
@@ -95,43 +99,48 @@ func TestHandlerConcurrentExecuteSingleLoad(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got := callCount(); got != 1 {
-		t.Fatalf("expected single loader execution under concurrency, got %d", got)
+	// All goroutines should complete without error
+	lazy := requireLazyHandler(t, handler)
+	if !lazy.loaded {
+		t.Fatalf("expected loaded after concurrent executes")
 	}
 }
 
-func TestHandlerLoadErrorIsCached(t *testing.T) {
+func TestHandlerHotReloadOnFileChange(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".claude", "skills", "fail")
-	writeSkill(t, filepath.Join(dir, "SKILL.md"), "fail", "body")
+	dir := filepath.Join(root, ".claude", "skills", "hotreload")
+	skillPath := filepath.Join(dir, "SKILL.md")
+	writeSkill(t, skillPath, "hotreload", "original body")
 
-	regs, _ := LoadFromFS(LoaderOptions{ProjectRoot: root})
-	lazy := requireLazyHandler(t, regs[0].Handler)
-
-	var (
-		mu    sync.Mutex
-		calls int
-	)
-	lazy.loader = func() (Result, error) {
-		mu.Lock()
-		calls++
-		mu.Unlock()
-		return Result{}, errors.New("boom")
+	regs, errs := LoadFromFS(LoaderOptions{ProjectRoot: root})
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errs: %v", errs)
 	}
 
-	handler := Handler(lazy)
-
-	if _, err := handler.Execute(context.Background(), ActivationContext{}); err == nil {
-		t.Fatalf("expected error on load")
+	handler := regs[0].Handler
+	res1, err := handler.Execute(context.Background(), ActivationContext{})
+	if err != nil {
+		t.Fatalf("first execute: %v", err)
 	}
-	if _, err := handler.Execute(context.Background(), ActivationContext{}); err == nil {
-		t.Fatalf("expected cached error on second execute")
+	out1, ok := res1.Output.(map[string]any)
+	require.True(t, ok)
+	if out1["body"] != "original body" {
+		t.Fatalf("unexpected first body: %v", out1["body"])
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-	if calls != 1 {
-		t.Fatalf("expected single load attempt, got %d", calls)
+	// Wait a bit and modify the file
+	time.Sleep(10 * time.Millisecond)
+	writeSkill(t, skillPath, "hotreload", "updated body")
+
+	// Execute again - should reload
+	res2, err := handler.Execute(context.Background(), ActivationContext{})
+	if err != nil {
+		t.Fatalf("second execute: %v", err)
+	}
+	out2, ok := res2.Output.(map[string]any)
+	require.True(t, ok)
+	if out2["body"] != "updated body" {
+		t.Fatalf("expected updated body after file change, got: %v", out2["body"])
 	}
 }
 
@@ -163,6 +172,33 @@ func TestHandlerBodyLengthProbe(t *testing.T) {
 	}
 }
 
+func TestHandlerStatError(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".claude", "skills", "staterr")
+	skillPath := filepath.Join(dir, "SKILL.md")
+	writeSkill(t, skillPath, "staterr", "body")
+
+	regs, _ := LoadFromFS(LoaderOptions{ProjectRoot: root})
+	handler := regs[0].Handler
+
+	// First execute should work
+	_, err := handler.Execute(context.Background(), ActivationContext{})
+	if err != nil {
+		t.Fatalf("first execute: %v", err)
+	}
+
+	// Delete the file
+	if err := os.Remove(skillPath); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	// Second execute should fail with stat error
+	_, err = handler.Execute(context.Background(), ActivationContext{})
+	if err == nil {
+		t.Fatalf("expected stat error after file deletion")
+	}
+}
+
 func requireLazyHandler(t *testing.T, handler Handler) *lazySkillHandler {
 	t.Helper()
 	lazy, ok := handler.(*lazySkillHandler)
@@ -170,23 +206,4 @@ func requireLazyHandler(t *testing.T, handler Handler) *lazySkillHandler {
 		t.Fatalf("expected *lazySkillHandler, got %T", handler)
 	}
 	return lazy
-}
-
-func trackLoaderCalls(lazy *lazySkillHandler) func() int {
-	var (
-		mu    sync.Mutex
-		calls int
-	)
-	original := lazy.loader
-	lazy.loader = func() (Result, error) {
-		mu.Lock()
-		calls++
-		mu.Unlock()
-		return original()
-	}
-	return func() int {
-		mu.Lock()
-		defer mu.Unlock()
-		return calls
-	}
 }

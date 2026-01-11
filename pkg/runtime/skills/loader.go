@@ -13,11 +13,46 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
+	"time"
 
 	"github.com/cexll/agentsdk-go/pkg/config"
 	"gopkg.in/yaml.v3"
 )
+
+// fileOps abstracts filesystem operations for testability.
+type fileOps struct {
+	readFile func(string) ([]byte, error)
+	openFile func(string) (fs.File, error)
+	statFile func(string) (fs.FileInfo, error)
+}
+
+var (
+	fileOpOverridesMu sync.RWMutex
+	fileOpOverrides   = struct {
+		read func(string) ([]byte, error)
+		stat func(string) (fs.FileInfo, error)
+	}{}
+)
+
+func readFileOverrideOrOS(path string) ([]byte, error) {
+	fileOpOverridesMu.RLock()
+	override := fileOpOverrides.read
+	fileOpOverridesMu.RUnlock()
+	if override != nil {
+		return override(path)
+	}
+	return os.ReadFile(path)
+}
+
+func statFileOverrideOrOS(path string) (fs.FileInfo, error) {
+	fileOpOverridesMu.RLock()
+	override := fileOpOverrides.stat
+	fileOpOverridesMu.RUnlock()
+	if override != nil {
+		return override(path)
+	}
+	return os.Stat(path)
+}
 
 // LoaderOptions controls how skills are discovered from the filesystem.
 type LoaderOptions struct {
@@ -131,6 +166,8 @@ func LoadFromFS(opts LoaderOptions) ([]SkillRegistration, []error) {
 		fsLayer = config.NewFS(opts.ProjectRoot, nil)
 	}
 
+	ops := resolveFileOps(opts.FS)
+
 	projectDir := filepath.Join(opts.ProjectRoot, ".claude", "skills")
 	files, loadErrs := loadSkillDir(projectDir, fsLayer)
 	errs = append(errs, loadErrs...)
@@ -162,7 +199,7 @@ func LoadFromFS(opts LoaderOptions) ([]SkillRegistration, []error) {
 		}
 		reg := SkillRegistration{
 			Definition: def,
-			Handler:    buildHandler(file),
+			Handler:    buildHandler(file, ops),
 		}
 		registrations = append(registrations, reg)
 	}
@@ -439,11 +476,26 @@ func buildDefinitionMetadata(file SkillFile) map[string]string {
 	return meta
 }
 
-func buildHandler(file SkillFile) Handler {
+func resolveFileOps(fsLayer *config.FS) fileOps {
+	if fsLayer != nil {
+		return fileOps{
+			readFile: fsLayer.ReadFile,
+			openFile: fsLayer.Open,
+			statFile: fsLayer.Stat,
+		}
+	}
+	return fileOps{
+		readFile: readFileOverrideOrOS,
+		openFile: func(path string) (fs.File, error) { return os.Open(path) },
+		statFile: statFileOverrideOrOS,
+	}
+}
+
+func buildHandler(file SkillFile, ops fileOps) Handler {
 	return &lazySkillHandler{
-		loader: func() (Result, error) {
-			return loadSkillContent(file)
-		},
+		path: file.Path,
+		file: file,
+		ops:  ops,
 	}
 }
 
@@ -519,24 +571,65 @@ func SetReadFileForTest(fn func(string) ([]byte, error)) (restore func()) {
 	}
 }
 
-// lazySkillHandler defers loading the skill body until first execution while
-// exposing a cheap loaded-body length probe for observability.
+// SetSkillFileOpsForTest swaps filesystem helpers; intended for white-box tests only.
+func SetSkillFileOpsForTest(
+	read func(string) ([]byte, error),
+	stat func(string) (fs.FileInfo, error),
+) (restore func()) {
+	fileOpOverridesMu.Lock()
+	prev := fileOpOverrides
+	if read != nil {
+		fileOpOverrides.read = read
+	}
+	if stat != nil {
+		fileOpOverrides.stat = stat
+	}
+	fileOpOverridesMu.Unlock()
+	return func() {
+		fileOpOverridesMu.Lock()
+		fileOpOverrides = prev
+		fileOpOverridesMu.Unlock()
+	}
+}
+
+// lazySkillHandler defers loading the skill body until first execution and
+// supports hot-reload by checking file modification time on each access.
 type lazySkillHandler struct {
-	once    sync.Once
-	loader  func() (Result, error)
+	path string
+	file SkillFile
+	ops  fileOps
+
+	mu      sync.Mutex
 	cached  Result
 	loadErr error
-	loaded  atomic.Bool
+	loaded  bool
+	modTime time.Time
 }
 
 func (h *lazySkillHandler) Execute(_ context.Context, _ ActivationContext) (Result, error) {
-	if h == nil || h.loader == nil {
+	if h == nil {
 		return Result{}, errors.New("skills: handler is nil")
 	}
-	h.once.Do(func() {
-		h.cached, h.loadErr = h.loader()
-		h.loaded.Store(true)
-	})
+
+	info, err := h.ops.statFile(h.path)
+	if err != nil {
+		return Result{}, fmt.Errorf("skills: stat %s: %w", h.path, err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.loaded && !info.ModTime().After(h.modTime) {
+		if h.loadErr != nil {
+			return Result{}, h.loadErr
+		}
+		return h.cached, nil
+	}
+
+	h.cached, h.loadErr = loadSkillContent(h.file)
+	h.loaded = true
+	h.modTime = info.ModTime()
+
 	if h.loadErr != nil {
 		return Result{}, h.loadErr
 	}
@@ -546,7 +639,12 @@ func (h *lazySkillHandler) Execute(_ context.Context, _ ActivationContext) (Resu
 // BodyLength reports the cached body length without triggering a load. The
 // second return value indicates whether a body has been loaded.
 func (h *lazySkillHandler) BodyLength() (int, bool) {
-	if h == nil || !h.loaded.Load() {
+	if h == nil {
+		return 0, false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.loaded {
 		return 0, false
 	}
 	return skillBodyLength(h.cached), true
