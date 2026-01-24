@@ -160,3 +160,167 @@ func TestNilContextExecutions(t *testing.T) {
 		t.Fatalf("expected context error")
 	}
 }
+
+// TestGlobToolRespectsGitignore verifies that GlobTool filters out .gitignore patterns.
+func TestGlobToolRespectsGitignore(t *testing.T) {
+	skipIfWindows(t)
+	dir := cleanTempDir(t)
+
+	// Create .gitignore
+	gitignoreContent := "*.log\nnode_modules/\n"
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(gitignoreContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create files
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0600)
+	_ = os.WriteFile(filepath.Join(dir, "debug.log"), []byte("debug output"), 0600)
+	_ = os.WriteFile(filepath.Join(dir, "app.txt"), []byte("app content"), 0600)
+
+	// Create node_modules directory with files
+	nodeModules := filepath.Join(dir, "node_modules")
+	_ = os.Mkdir(nodeModules, 0755)
+	_ = os.WriteFile(filepath.Join(nodeModules, "package.json"), []byte("{}"), 0600)
+
+	tool := NewGlobToolWithRoot(dir)
+	// respectGitignore is true by default
+
+	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "*"})
+	if err != nil {
+		t.Fatalf("glob failed: %v", err)
+	}
+
+	// Should include main.go and app.txt
+	if !strings.Contains(res.Output, "main.go") {
+		t.Errorf("Expected main.go in output: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "app.txt") {
+		t.Errorf("Expected app.txt in output: %s", res.Output)
+	}
+
+	// Should NOT include debug.log (matches *.log)
+	if strings.Contains(res.Output, "debug.log") {
+		t.Errorf("Expected debug.log to be filtered out: %s", res.Output)
+	}
+
+	// Should NOT include node_modules (directory ignored)
+	if strings.Contains(res.Output, "node_modules") {
+		t.Errorf("Expected node_modules to be filtered out: %s", res.Output)
+	}
+}
+
+// TestGlobToolDisableGitignore verifies that SetRespectGitignore(false) disables filtering.
+func TestGlobToolDisableGitignore(t *testing.T) {
+	skipIfWindows(t)
+	dir := cleanTempDir(t)
+
+	// Create .gitignore
+	gitignoreContent := "*.log\n"
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(gitignoreContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create files
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0600)
+	_ = os.WriteFile(filepath.Join(dir, "debug.log"), []byte("debug output"), 0600)
+
+	tool := NewGlobToolWithRoot(dir)
+	tool.SetRespectGitignore(false)
+
+	res, err := tool.Execute(context.Background(), map[string]any{"pattern": "*"})
+	if err != nil {
+		t.Fatalf("glob failed: %v", err)
+	}
+
+	// Both files should be included when gitignore is disabled
+	if !strings.Contains(res.Output, "main.go") {
+		t.Errorf("Expected main.go in output: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "debug.log") {
+		t.Errorf("Expected debug.log in output when gitignore disabled: %s", res.Output)
+	}
+}
+
+// TestGrepToolRespectsGitignore verifies that GrepTool filters out .gitignore patterns.
+func TestGrepToolRespectsGitignore(t *testing.T) {
+	skipIfWindows(t)
+	dir := cleanTempDir(t)
+
+	// Create .gitignore
+	gitignoreContent := "*.log\nnode_modules/\n"
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(gitignoreContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create files with searchable content
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("function test()"), 0600)
+	_ = os.WriteFile(filepath.Join(dir, "debug.log"), []byte("function debug()"), 0600)
+
+	// Create node_modules with searchable content
+	nodeModules := filepath.Join(dir, "node_modules")
+	_ = os.Mkdir(nodeModules, 0755)
+	_ = os.WriteFile(filepath.Join(nodeModules, "lib.js"), []byte("function library()"), 0600)
+
+	tool := NewGrepToolWithRoot(dir)
+	// respectGitignore is true by default
+
+	res, err := tool.Execute(context.Background(), map[string]any{
+		"pattern":     "function",
+		"path":        dir,
+		"output_mode": "files_with_matches",
+	})
+	if err != nil {
+		t.Fatalf("grep failed: %v", err)
+	}
+
+	// Should find main.go
+	if !strings.Contains(res.Output, "main.go") {
+		t.Errorf("Expected main.go in grep output: %s", res.Output)
+	}
+
+	// Should NOT find debug.log (matches *.log)
+	if strings.Contains(res.Output, "debug.log") {
+		t.Errorf("Expected debug.log to be filtered out: %s", res.Output)
+	}
+
+	// Should NOT find node_modules content
+	if strings.Contains(res.Output, "node_modules") || strings.Contains(res.Output, "lib.js") {
+		t.Errorf("Expected node_modules to be filtered out: %s", res.Output)
+	}
+}
+
+// TestGrepToolDisableGitignore verifies that SetRespectGitignore(false) disables filtering.
+func TestGrepToolDisableGitignore(t *testing.T) {
+	skipIfWindows(t)
+	dir := cleanTempDir(t)
+
+	// Create .gitignore
+	gitignoreContent := "*.log\n"
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(gitignoreContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create files
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("function test()"), 0600)
+	_ = os.WriteFile(filepath.Join(dir, "debug.log"), []byte("function debug()"), 0600)
+
+	tool := NewGrepToolWithRoot(dir)
+	tool.SetRespectGitignore(false)
+
+	res, err := tool.Execute(context.Background(), map[string]any{
+		"pattern":     "function",
+		"path":        dir,
+		"output_mode": "files_with_matches",
+	})
+	if err != nil {
+		t.Fatalf("grep failed: %v", err)
+	}
+
+	// Both files should be found when gitignore is disabled
+	if !strings.Contains(res.Output, "main.go") {
+		t.Errorf("Expected main.go in output: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "debug.log") {
+		t.Errorf("Expected debug.log in output when gitignore disabled: %s", res.Output)
+	}
+}

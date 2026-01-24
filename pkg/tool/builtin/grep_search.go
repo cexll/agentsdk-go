@@ -9,15 +9,18 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/cexll/agentsdk-go/pkg/gitignore"
 )
 
 type grepSearchOptions struct {
-	before    int
-	after     int
-	glob      string
-	typeGlobs []string
-	root      string
-	multiline bool
+	before           int
+	after            int
+	glob             string
+	typeGlobs        []string
+	root             string
+	multiline        bool
+	gitignoreMatcher *gitignore.Matcher
 }
 
 type fileCount struct {
@@ -50,6 +53,18 @@ func (g *GrepTool) searchDirectory(ctx context.Context, root string, re *regexp.
 			}
 			return nil
 		}
+
+		// Filter out gitignored paths
+		if opts.gitignoreMatcher != nil {
+			relPath := displayPath(path, root)
+			if opts.gitignoreMatcher.Match(relPath, d.IsDir()) {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+		}
+
 		if d.IsDir() {
 			if relativeDepth(root, path) > g.maxDepth {
 				return filepath.SkipDir

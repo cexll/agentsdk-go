@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/cexll/agentsdk-go/pkg/gitignore"
 	"github.com/cexll/agentsdk-go/pkg/security"
 	"github.com/cexll/agentsdk-go/pkg/tool"
 )
@@ -41,9 +42,11 @@ var globSchema = &tool.JSONSchema{
 
 // GlobTool looks up files via glob patterns.
 type GlobTool struct {
-	sandbox    *security.Sandbox
-	root       string
-	maxResults int
+	sandbox          *security.Sandbox
+	root             string
+	maxResults       int
+	respectGitignore bool
+	gitignoreMatcher *gitignore.Matcher
 }
 
 // NewGlobTool builds a GlobTool rooted at the current directory.
@@ -53,9 +56,10 @@ func NewGlobTool() *GlobTool { return NewGlobToolWithRoot("") }
 func NewGlobToolWithRoot(root string) *GlobTool {
 	resolved := resolveRoot(root)
 	return &GlobTool{
-		sandbox:    security.NewSandbox(resolved),
-		root:       resolved,
-		maxResults: globResultLimit,
+		sandbox:          security.NewSandbox(resolved),
+		root:             resolved,
+		maxResults:       globResultLimit,
+		respectGitignore: true, // Default to respecting .gitignore
 	}
 }
 
@@ -63,9 +67,18 @@ func NewGlobToolWithRoot(root string) *GlobTool {
 func NewGlobToolWithSandbox(root string, sandbox *security.Sandbox) *GlobTool {
 	resolved := resolveRoot(root)
 	return &GlobTool{
-		sandbox:    sandbox,
-		root:       resolved,
-		maxResults: globResultLimit,
+		sandbox:          sandbox,
+		root:             resolved,
+		maxResults:       globResultLimit,
+		respectGitignore: true, // Default to respecting .gitignore
+	}
+}
+
+// SetRespectGitignore configures whether the tool should respect .gitignore patterns.
+func (g *GlobTool) SetRespectGitignore(respect bool) {
+	g.respectGitignore = respect
+	if respect && g.gitignoreMatcher == nil {
+		g.gitignoreMatcher, _ = gitignore.NewMatcher(g.root)
 	}
 }
 
@@ -99,13 +112,14 @@ func (g *GlobTool) Execute(ctx context.Context, params map[string]interface{}) (
 		return nil, err
 	}
 
+	// Initialize gitignore matcher lazily if needed
+	if g.respectGitignore && g.gitignoreMatcher == nil {
+		g.gitignoreMatcher, _ = gitignore.NewMatcher(g.root)
+	}
+
 	matches, err := filepath.Glob(absPattern)
 	if err != nil {
 		return nil, fmt.Errorf("glob failed: %w", err)
-	}
-	truncated := len(matches) > g.maxResults
-	if truncated {
-		matches = matches[:g.maxResults]
 	}
 
 	results := make([]string, 0, len(matches))
@@ -114,8 +128,24 @@ func (g *GlobTool) Execute(ctx context.Context, params map[string]interface{}) (
 		if err := g.sandbox.ValidatePath(clean); err != nil {
 			return nil, err
 		}
-		results = append(results, displayPath(clean, g.root))
+		relPath := displayPath(clean, g.root)
+
+		// Filter out gitignored files
+		if g.respectGitignore && g.gitignoreMatcher != nil {
+			info, statErr := os.Stat(clean)
+			isDir := statErr == nil && info.IsDir()
+			if g.gitignoreMatcher.Match(relPath, isDir) {
+				continue
+			}
+		}
+
+		results = append(results, relPath)
+		if len(results) >= g.maxResults {
+			break
+		}
 	}
+
+	truncated := len(matches) > len(results) || len(results) >= g.maxResults
 
 		return &tool.ToolResult{
 			Success: true,

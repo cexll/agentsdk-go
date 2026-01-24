@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 
+	"github.com/cexll/agentsdk-go/pkg/gitignore"
 	"github.com/cexll/agentsdk-go/pkg/security"
 	"github.com/cexll/agentsdk-go/pkg/tool"
 )
@@ -109,11 +110,13 @@ type GrepMatch struct {
 
 // GrepTool enables scoped code searches.
 type GrepTool struct {
-	sandbox    *security.Sandbox
-	root       string
-	maxResults int
-	maxDepth   int
-	maxContext int
+	sandbox          *security.Sandbox
+	root             string
+	maxResults       int
+	maxDepth         int
+	maxContext       int
+	respectGitignore bool
+	gitignoreMatcher *gitignore.Matcher
 }
 
 // NewGrepTool builds a GrepTool rooted at the current directory.
@@ -123,11 +126,12 @@ func NewGrepTool() *GrepTool { return NewGrepToolWithRoot("") }
 func NewGrepToolWithRoot(root string) *GrepTool {
 	resolved := resolveRoot(root)
 	return &GrepTool{
-		sandbox:    security.NewSandbox(resolved),
-		root:       resolved,
-		maxResults: grepResultLimit,
-		maxDepth:   grepMaxDepth,
-		maxContext: grepMaxContext,
+		sandbox:          security.NewSandbox(resolved),
+		root:             resolved,
+		maxResults:       grepResultLimit,
+		maxDepth:         grepMaxDepth,
+		maxContext:       grepMaxContext,
+		respectGitignore: true, // Default to respecting .gitignore
 	}
 }
 
@@ -135,11 +139,20 @@ func NewGrepToolWithRoot(root string) *GrepTool {
 func NewGrepToolWithSandbox(root string, sandbox *security.Sandbox) *GrepTool {
 	resolved := resolveRoot(root)
 	return &GrepTool{
-		sandbox:    sandbox,
-		root:       resolved,
-		maxResults: grepResultLimit,
-		maxDepth:   grepMaxDepth,
-		maxContext: grepMaxContext,
+		sandbox:          sandbox,
+		root:             resolved,
+		maxResults:       grepResultLimit,
+		maxDepth:         grepMaxDepth,
+		maxContext:       grepMaxContext,
+		respectGitignore: true, // Default to respecting .gitignore
+	}
+}
+
+// SetRespectGitignore configures whether the tool should respect .gitignore patterns.
+func (g *GrepTool) SetRespectGitignore(respect bool) {
+	g.respectGitignore = respect
+	if respect && g.gitignoreMatcher == nil {
+		g.gitignoreMatcher, _ = gitignore.NewMatcher(g.root)
 	}
 }
 
@@ -232,13 +245,20 @@ func (g *GrepTool) Execute(ctx context.Context, params map[string]interface{}) (
 	if !info.IsDir() {
 		searchRoot = filepath.Dir(targetPath)
 	}
+
+	// Initialize gitignore matcher lazily if needed
+	if g.respectGitignore && g.gitignoreMatcher == nil {
+		g.gitignoreMatcher, _ = gitignore.NewMatcher(g.root)
+	}
+
 	options := grepSearchOptions{
-		before:    beforeCtx,
-		after:     afterCtx,
-		glob:      glob,
-		typeGlobs: resolveTypeGlobs(fileType),
-		root:      searchRoot,
-		multiline: multiline,
+		before:           beforeCtx,
+		after:            afterCtx,
+		glob:             glob,
+		typeGlobs:        resolveTypeGlobs(fileType),
+		root:             searchRoot,
+		multiline:        multiline,
+		gitignoreMatcher: g.gitignoreMatcher,
 	}
 
 	var truncated bool

@@ -38,6 +38,7 @@ type Settings struct {
 	ExtraKnownMarketplaces     map[string]MarketplaceSource `json:"extraKnownMarketplaces,omitempty"`     // Additional plugin marketplaces by name.
 	AWSAuthRefresh             string                       `json:"awsAuthRefresh,omitempty"`             // Script to refresh AWS SSO credentials.
 	AWSCredentialExport        string                       `json:"awsCredentialExport,omitempty"`        // Script that prints JSON AWS credentials.
+	RespectGitignore           *bool                        `json:"respectGitignore,omitempty"`           // Whether Glob/Grep tools should respect .gitignore patterns.
 }
 
 // PermissionsConfig defines per-tool permission rules.
@@ -139,6 +140,7 @@ func GetDefaultSettings() Settings {
 		CleanupPeriodDays:   30,
 		IncludeCoAuthoredBy: boolPtr(true),
 		DisableAllHooks:     boolPtr(false),
+		RespectGitignore:    boolPtr(true),
 		BashOutput: &BashOutputConfig{
 			SyncThresholdBytes:  &syncThresholdBytes,
 			AsyncThresholdBytes: &asyncThresholdBytes,
