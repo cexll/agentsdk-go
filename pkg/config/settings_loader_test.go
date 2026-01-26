@@ -381,4 +381,3 @@ func TestLoadJSONFileMissingReturnsNil(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, settings)
 }
-

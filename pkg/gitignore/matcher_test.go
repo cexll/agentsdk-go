@@ -17,7 +17,7 @@ node_modules/
 build/
 *.tmp
 `
-	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(gitignoreContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(gitignoreContent), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -46,11 +46,11 @@ func TestNewMatcherNoGitignore(t *testing.T) {
 
 func TestParseLine(t *testing.T) {
 	tests := []struct {
-		name     string
-		line     string
-		relDir   string
-		wantOK   bool
-		wantPat  pattern
+		name    string
+		line    string
+		relDir  string
+		wantOK  bool
+		wantPat pattern
 	}{
 		{
 			name:   "empty line",
@@ -169,7 +169,7 @@ vendor/
 .git
 *.tmp
 `
-	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(gitignoreContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(gitignoreContent), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -179,10 +179,10 @@ vendor/
 	}
 
 	tests := []struct {
-		name    string
-		path    string
-		isDir   bool
-		want    bool
+		name  string
+		path  string
+		isDir bool
+		want  bool
 	}{
 		// Basic file patterns
 		{"log file ignored", "app.log", false, true},
@@ -230,7 +230,7 @@ func TestMatcherNestedGitignore(t *testing.T) {
 *.log
 node_modules/
 `
-	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(rootGitignore), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(rootGitignore), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -245,7 +245,7 @@ node_modules/
 dist/
 !keep.log
 `
-	if err := os.WriteFile(filepath.Join(subDir, ".gitignore"), []byte(nestedGitignore), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(subDir, ".gitignore"), []byte(nestedGitignore), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -346,7 +346,7 @@ node_modules/
 vendor/
 .git
 `
-	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(gitignoreContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(gitignoreContent), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -396,7 +396,10 @@ func TestMatchPatternDirOnly(t *testing.T) {
 
 func TestMatchEmpty(t *testing.T) {
 	tmpDir := t.TempDir()
-	m, _ := NewMatcher(tmpDir)
+	m, err := NewMatcher(tmpDir)
+	if err != nil {
+		t.Fatalf("NewMatcher failed: %v", err)
+	}
 
 	// Empty path should not match
 	if m.Match("", false) {
@@ -436,7 +439,7 @@ func TestMatchPatternWithSlash(t *testing.T) {
 build/output/
 src/generated/
 `
-	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(gitignoreContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(gitignoreContent), 0600); err != nil {
 		t.Fatal(err)
 	}
 
