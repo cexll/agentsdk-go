@@ -25,6 +25,7 @@ import (
 	"github.com/cexll/agentsdk-go/pkg/runtime/subagents"
 	"github.com/cexll/agentsdk-go/pkg/sandbox"
 	"github.com/cexll/agentsdk-go/pkg/security"
+	"github.com/cexll/agentsdk-go/pkg/tasks"
 	"github.com/cexll/agentsdk-go/pkg/tool"
 	toolbuiltin "github.com/cexll/agentsdk-go/pkg/tool/builtin"
 	"github.com/google/uuid"
@@ -1310,6 +1311,7 @@ func builtinToolFactories(root string, sandboxDisabled bool, entry EntryPoint, s
 	factories["bash_output"] = func() tool.Tool { return toolbuiltin.NewBashOutputTool(nil) }
 	factories["bash_status"] = func() tool.Tool { return toolbuiltin.NewBashStatusTool() }
 	factories["kill_task"] = func() tool.Tool { return toolbuiltin.NewKillTaskTool() }
+	factories["task_create"] = func() tool.Tool { return toolbuiltin.NewTaskCreateTool(tasks.NewTaskStore()) }
 	factories["todo_write"] = func() tool.Tool { return toolbuiltin.NewTodoWriteTool() }
 	factories["task_list"] = func() tool.Tool { return toolbuiltin.NewTaskListTool(taskStore) }
 	factories["task_get"] = func() tool.Tool { return toolbuiltin.NewTaskGetTool(taskStore) }
@@ -1335,6 +1337,7 @@ func builtinOrder(entry EntryPoint) []string {
 		"bash_output",
 		"bash_status",
 		"kill_task",
+		"task_create",
 		"todo_write",
 		"task_list",
 		"task_get",
