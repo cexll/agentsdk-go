@@ -38,3 +38,5 @@ examples/http/http
 tools.json
 .gocache
 .gomodcache
+.swe-agent
+.trace
