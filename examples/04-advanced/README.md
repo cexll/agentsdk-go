@@ -10,7 +10,6 @@ This example wires every advanced capability into one runnable binary. Each feat
 - Skills: auto + manual activation with force flag.
 - Subagents: chooser with builtin + custom deploy guard.
 - Commands: slash command parser executes inline script inside the prompt.
-- Plugins: `.claude-plugin` manifest included for discovery; filtered by `enabled_plugins` in `.claude/settings.json`.
 
 ## Run
 ```bash
@@ -22,12 +21,12 @@ go run . --prompt "生成一份安全巡检摘要" --enable-mcp=false
 Useful flags:
 - `--enable-mcp` toggle MCP server registration (requires `uvx` in PATH).
 - `--enable-trace` and `--trace-dir trace-out` to inspect trace logs.
-- `--enable-hooks/--enable-skills/--enable-subagents/--enable-commands/--enable-plugins/--enable-sandbox` to isolate components.
+- `--enable-hooks/--enable-skills/--enable-subagents/--enable-commands/--enable-sandbox` to isolate components.
 - `--force-skill add-note` to run manual skills; `--target-subagent plan` to pin a subagent.
 
 ## Expected output
 - Final agent message that merges tool results (observe_logs + optional MCP time).
-- Sections printing commands executed, skills, subagent chosen, hook events, sandbox snapshot, plugin list, trace directory, and middleware metrics.
+- Sections printing commands executed, skills, subagent chosen, hook events, sandbox snapshot, trace directory, and middleware metrics.
 
 ## Layout
 - `main.go` orchestrates flags and runtime wiring.
@@ -39,4 +38,4 @@ Useful flags:
 - `subagents.go` subagent definitions and handlers.
 - `commands.go` slash command registration and helpers.
 - `model.go` demo model + tool implementation.
-- `.claude/settings.json` basic env/permissions; `.claude-plugin/` sample plugin assets.
+- `.claude/settings.json` basic env/permissions.

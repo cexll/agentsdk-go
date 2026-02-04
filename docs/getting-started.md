@@ -293,8 +293,7 @@ Configuration lives under `.claude/`:
 ├── settings.local.json   # local overrides (gitignored)
 ├── skills/               # skill definitions
 ├── commands/             # slash command definitions
-├── agents/               # subagent definitions
-└── plugins/              # plugin directory
+└── agents/               # subagent definitions
 ```
 
 ### Precedence (high → low)

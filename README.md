@@ -2,18 +2,14 @@
 
 # agentsdk-go
 
-An Agent SDK implemented in Go that provides the full Claude Code core capabilities and middleware interception.
+An Agent SDK implemented in Go that implements core Claude Code-style runtime capabilities, plus an optional middleware interception layer.
 
 ## Overview
 
-agentsdk-go is a modular agent development framework that implements Claude Code's seven core capabilities (Hooks, MCP, Sandbox, Skills, Subagents, Commands, Plugins) and extends them with a six-point middleware interception mechanism. The SDK supports deployment scenarios across CLI, CI/CD, and enterprise platforms.
+agentsdk-go is a modular agent development framework that implements core Claude Code-style runtime capabilities (Hooks, MCP, Sandbox, Skills, Subagents, Commands, Tasks) and optionally exposes a six-point middleware interception mechanism. The SDK supports deployment scenarios across CLI, CI/CD, and enterprise platforms.
 
-### Technical Metrics
+### Dependencies
 
-- Core code: ~20,300 lines (production code, excluding tests)
-- Agent core loop: 189 lines
-- Test coverage: 88–96% across core modules (agent 95.7%, model 92.2%, middleware 91.8%, config 90.1%, api 88.8%)
-- Modules: 13 independent packages
 - External dependencies: anthropic-sdk-go, fsnotify, gopkg.in/yaml.v3, google/uuid, golang.org/x/mod, golang.org/x/net
 
 ## Features
@@ -27,12 +23,11 @@ agentsdk-go is a modular agent development framework that implements Claude Code
 - **OpenTelemetry**: Distributed tracing with span propagation
 - **UUID Tracking**: Request-level UUID for observability
 
-### Concurrency Safety
-- **Thread-Safe Runtime**: All Runtime methods can be safely called from multiple goroutines
-- **Automatic Session Serialization**: Requests with the same session ID are automatically queued
-- **Graceful Shutdown**: `Runtime.Close()` waits for in-flight requests to complete
-- **Zero Data Races**: Verified with Go's race detector (`go test -race`)
-- **No Manual Locking Required**: Users don't need to worry about synchronization
+### Concurrency Model
+- **Thread-Safe Runtime**: Runtime guards mutable state with internal locks.
+- **Per-Session Mutual Exclusion**: Concurrent `Run`/`RunStream` calls on the same `SessionID` return `ErrConcurrentExecution` (callers can queue/retry if they want serialization).
+- **Shutdown**: `Runtime.Close()` waits for in-flight requests to complete.
+- **Validation**: run `go test -race ./...` after changes.
 
 ### Examples
 - `examples/01-basic` - Minimal request/response
@@ -44,7 +39,7 @@ agentsdk-go is a modular agent development framework that implements Claude Code
 
 ## System Architecture
 
-### Core Layer (6 modules)
+### Core Layer
 
 - `pkg/agent` - Agent execution loop coordinating model calls and tool execution
 - `pkg/middleware` - Six interception points for extending the request/response lifecycle
@@ -53,7 +48,7 @@ agentsdk-go is a modular agent development framework that implements Claude Code
 - `pkg/message` - Message history management with an LRU-based session cache
 - `pkg/api` - Unified API surface exposing SDK features
 
-### Feature Layer (7 modules)
+### Feature Layer
 
 - `pkg/core/hooks` - Hooks executor covering seven lifecycle events with custom extensions
 - `pkg/mcp` - MCP (Model Context Protocol) client bridging external tools (stdio/SSE) with automatic registration
@@ -61,7 +56,7 @@ agentsdk-go is a modular agent development framework that implements Claude Code
 - `pkg/runtime/skills` - Skills management supporting scriptable loading and hot reload
 - `pkg/runtime/subagents` - Subagent management for multi-agent orchestration and scheduling
 - `pkg/runtime/commands` - Commands parser handling slash-command routing and parameter validation
-- `pkg/plugins` - Plugin system with signature verification and lifecycle hooks
+- `pkg/runtime/tasks` - Task tracking and dependency management
 
 In addition, the feature layer includes supporting packages such as `pkg/config` (configuration loading/hot reload), `pkg/core/events` (event bus), and `pkg/security` (command and path validation).
 
@@ -85,7 +80,6 @@ flowchart TB
     MCP[pkg/mcp]
     Sandbox[pkg/sandbox]
     Security[pkg/security]
-    Plugins[pkg/plugins]
   end
 
   Config --> API
@@ -95,7 +89,6 @@ flowchart TB
   MCP --> Tool
   Tool --> Sandbox
   Tool --> Security
-  Plugins --> Agent
 ```
 
 ### Middleware Interception Points
@@ -259,7 +252,7 @@ for event := range events {
 
 ### Concurrent Usage
 
-The SDK is fully thread-safe and supports concurrent request processing:
+Runtime supports concurrent calls across different `SessionID`s. Calls sharing the same `SessionID` are mutually exclusive.
 
 ```go
 // Same runtime can be safely used from multiple goroutines
@@ -288,17 +281,17 @@ for i := 0; i < 10; i++ {
 }
 wg.Wait()
 
-// Requests with the same session ID are automatically serialized
-go runtime.Run(ctx, api.Request{Prompt: "First", SessionID: "same"})
-go runtime.Run(ctx, api.Request{Prompt: "Second", SessionID: "same"}) // Waits for first to complete
+// Requests with the same session ID must be serialized by the caller
+_, _ = runtime.Run(ctx, api.Request{Prompt: "First", SessionID: "same"})
+_, _ = runtime.Run(ctx, api.Request{Prompt: "Second", SessionID: "same"})
 ```
 
 **Concurrency Guarantees:**
-- All `Runtime` methods are thread-safe
-- Same-session requests are automatically queued (no `ErrConcurrentExecution`)
+- All `Runtime` methods are safe for concurrent use across sessions
+- Same-session concurrent requests return `ErrConcurrentExecution`
 - Different-session requests execute in parallel
 - `Runtime.Close()` gracefully waits for all in-flight requests
-- No manual locking or synchronization required
+- No manual locking required for different sessions; serialize/queue same-session calls in the caller
 
 ### Customize Tool Registration
 
@@ -345,7 +338,6 @@ agentsdk-go/
 │   ├── message/                # Message history management
 │   ├── api/                    # Unified SDK interface
 │   ├── config/                 # Configuration loading
-│   ├── plugins/                # Plugin system
 │   ├── core/
 │   │   ├── events/             # Event bus
 │   │   └── hooks/              # Hooks executor
@@ -378,8 +370,7 @@ The SDK uses the `.claude/` directory for configuration, compatible with Claude 
 ├── rules/            # Rules definitions (markdown)
 ├── skills/           # Skills definitions
 ├── commands/         # Slash command definitions
-├── agents/           # Subagents definitions
-└── plugins/          # Plugin directory
+└── agents/           # Subagents definitions
 ```
 
 Configuration precedence (high → low):
@@ -497,20 +488,9 @@ go test -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out
 ```
 
-### Test Coverage
+### Coverage
 
-#### Core Modules
-
-| Module | Coverage |
-|--------|----------|
-| pkg/agent | 95.7% |
-| pkg/model | 92.2% |
-| pkg/middleware | 91.8% |
-| pkg/config | 90.1% |
-| pkg/core/events | 90.4% |
-| pkg/tool | 90.9% |
-| pkg/api | 88.8% |
-| pkg/core/hooks | 88.9% |
+Coverage numbers change over time; generate a report with `go test -coverprofile=coverage.out ./...`.
 
 ## Build
 
@@ -655,7 +635,6 @@ customMiddleware := middleware.Middleware{
 
 ### KISS (Keep It Simple, Stupid)
 
-- Agent core loop stays at 189 lines
 - Single responsibility; each module has a clear role
 - Avoid overdesign and unnecessary abstractions
 
@@ -667,7 +646,7 @@ customMiddleware := middleware.Middleware{
 
 ### Modularity
 
-- 13 independent packages with loose coupling
+- Independent packages with loose coupling
 - Clear interface boundaries
 - Easy to test and maintain
 

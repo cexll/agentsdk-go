@@ -161,7 +161,6 @@ validator.BanFragment("sudo rm")
 - Create/manage approval requests  
 - Session-level allowlist (TTL)  
 - Decision recording  
-- Approval event notifications
 
 ### Implementation
 
@@ -185,11 +184,14 @@ if err != nil {
     return err
 }
 
-if queue.IsWhitelisted(sessionID) {
-    return executeCommand(command)
+resolved, err := queue.Wait(context.Background(), request.ID)
+if err != nil {
+    return err
 }
-
-return fmt.Errorf("waiting for approval: %s", request.ID)
+if resolved.State != security.ApprovalApproved {
+    return fmt.Errorf("approval denied")
+}
+return executeCommand(command)
 ```
 
 ### Decisions
@@ -215,6 +217,8 @@ if err != nil {
 3. Log all approval actions  
 4. Enforce approval timeouts; auto-deny expired  
 5. Cap whitelist TTL and re-approve regularly
+
+> 运行时可通过 `api.Options{ApprovalQueue: ..., ApprovalWait: true}` 启用阻塞式审批。
 
 ## Middleware Security Interception
 
@@ -346,35 +350,6 @@ afterToolReview := middleware.Middleware{
 }
 ```
 
-### AfterAgent: Audit Logging
-
-Threats: missing audit, compliance gaps, untraceable incidents.
-
-```go
-afterAgentAudit := middleware.Middleware{
-    AfterAgent: func(ctx context.Context, resp *middleware.AgentResponse) (*middleware.AgentResponse, error) {
-        record := audit.Entry{
-            Timestamp: time.Now().UTC(),
-            SessionID: resp.SessionID,
-            Input:     resp.Input,
-            Output:    resp.Output,
-            ToolCalls: resp.ToolCalls,
-            Approved:  approvalQueue.IsWhitelisted(resp.SessionID),
-            UserID:    getUserID(ctx),
-        }
-        if err := audit.Store(record); err != nil {
-            log.Printf("audit write failed: %v", err)
-            return nil, fmt.Errorf("audit logging failed")
-        }
-        if err := compliance.Check(resp); err != nil {
-            audit.Log(ctx, "compliance_violation", err.Error())
-            return nil, fmt.Errorf("compliance failed: %w", err)
-        }
-        return resp, nil
-    },
-}
-```
-
 ## Deployment Checklist
 
 ### Config
@@ -384,7 +359,6 @@ afterAgentAudit := middleware.Middleware{
 - [ ] Approval queue storage path created with permissions  
 - [ ] Security handlers registered at all middleware hooks  
 - [ ] Middleware timeouts < request timeout  
-- [ ] Audit log path configured and writable  
 - [ ] Network allowlist configured
 
 ### Tests
@@ -394,19 +368,6 @@ go test ./pkg/security/... -v
 go test ./pkg/middleware/... -v
 go test ./test/integration/security/... -v
 ```
-
-### Monitoring
-
-Track metrics:
-
-- `middleware_stage_rejections_total{stage="before_agent"}`
-- `middleware_stage_rejections_total{stage="before_tool"}`
-- `approval_queue_pending_total`
-- `sandbox_violations_total{type="path"}`
-- `sandbox_violations_total{type="command"}`
-- `audit_log_failures_total`
-
-Alert on: high rejection rate, approval backlog, audit write failures, sandbox violation spikes.
 
 ## Common Vulnerabilities
 

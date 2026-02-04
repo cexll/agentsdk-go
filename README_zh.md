@@ -2,40 +2,35 @@
 
 # agentsdk-go
 
-基于 Go 语言实现的 Agent SDK，提供完整的 Claude Code 核心功能和 Middleware 拦截机制。
+基于 Go 语言实现的 Agent SDK，实现 Claude Code 风格的核心运行时能力，并提供可选的 Middleware 拦截机制。
 
 ## 概述
 
-agentsdk-go 是一个模块化的 Agent 开发框架，实现了 Claude Code 的 7 项核心功能（Hooks、MCP、Sandbox、Skills、Subagents、Commands、Plugins），并在此基础上扩展了 6 点 Middleware 拦截机制。该 SDK 支持 CLI、CI/CD 和企业平台等多种部署场景。
+agentsdk-go 是一个模块化的 Agent 开发框架，实现 Claude Code 风格的核心运行时能力（Hooks、MCP、Sandbox、Skills、Subagents、Commands、Tasks），并在此基础上提供可选的 6 点 Middleware 拦截机制。该 SDK 支持 CLI、CI/CD 和企业平台等多种部署场景。
 
-### 技术指标
+### 依赖
 
-- 核心代码：约 20,300 行（生产代码，不含测试）
-- Agent 核心循环：189 行
-- 测试覆盖率：核心模块 88-96%（agent 95.7%，model 92.2%，middleware 91.8%，config 90.1%，api 88.8%）
-- 模块数量：13 个独立包
 - 外部依赖：anthropic-sdk-go、fsnotify、gopkg.in/yaml.v3、google/uuid、golang.org/x/mod、golang.org/x/net
 
-### v0.4.0 新增功能
+### 功能概览
 
 - **多模型支持**：通过 `ModelFactory` 接口实现 Subagent 级别的模型绑定
-- **Token 统计**：全面的 Token 用量追踪与自动累计
+- **Token 统计**：支持 Token 用量追踪与累计
 - **自动 Compact**：当 Token 达到阈值时自动压缩上下文
 - **异步 Bash**：后台命令执行与任务管理
 - **Rules 配置**：支持 `.claude/rules/` 目录并支持热重载
 - **OpenTelemetry**：分布式追踪与 span 传播
 - **UUID 追踪**：请求级别的 UUID 用于可观测性
 
-### 并发安全
-- **线程安全 Runtime**：所有 Runtime 方法可安全地从多个 goroutine 调用
-- **自动会话串行化**：相同 session ID 的请求自动排队
-- **优雅关闭**：`Runtime.Close()` 等待所有进行中的请求完成
-- **零数据竞态**：经 Go race detector 验证（`go test -race`）
-- **无需手动加锁**：用户无需关心同步问题
+### 并发模型
+- **线程安全 Runtime**：内部对可变状态加锁。
+- **会话互斥**：相同 `SessionID` 的并发 `Run`/`RunStream` 会返回 `ErrConcurrentExecution`（需要串行化时由调用方自行排队/重试）。
+- **关闭**：`Runtime.Close()` 等待所有进行中的请求完成。
+- **验证**：修改后运行 `go test -race ./...`。
 
 ## 系统架构
 
-### 核心层（6 个模块）
+### 核心层
 
 - `pkg/agent` - Agent 执行循环，负责模型调用和工具执行的协调
 - `pkg/middleware` - 6 点拦截机制，支持请求/响应生命周期的扩展
@@ -44,7 +39,7 @@ agentsdk-go 是一个模块化的 Agent 开发框架，实现了 Claude Code 的
 - `pkg/message` - 消息历史管理，基于 LRU 的会话缓存
 - `pkg/api` - 统一 API 接口，对外暴露 SDK 功能
 
-### 功能层（7 个模块）
+### 功能层
 
 - `pkg/core/hooks` - Hooks 执行器，覆盖 7 类生命周期事件，支持自定义扩展
 - `pkg/mcp` - MCP（Model Context Protocol）客户端，桥接外部工具（stdio/SSE）并自动注册
@@ -52,7 +47,7 @@ agentsdk-go 是一个模块化的 Agent 开发框架，实现了 Claude Code 的
 - `pkg/runtime/skills` - Skills 管理，支持脚本化技能装载与热更新
 - `pkg/runtime/subagents` - Subagents 管理，负责多智能体的编排与调度
 - `pkg/runtime/commands` - Commands 解析器，处理 Slash 命令路由与参数校验
-- `pkg/plugins` - 插件系统，支持签名验证与生命周期钩子
+- `pkg/runtime/tasks` - 任务追踪与依赖管理
 
 此外，功能层还包含 `pkg/config`（配置加载/热更新）、`pkg/core/events`（事件总线）和 `pkg/security`（命令与路径校验）等支撑包。
 
@@ -76,7 +71,6 @@ flowchart TB
     MCP[pkg/mcp]
     Sandbox[pkg/sandbox]
     Security[pkg/security]
-    Plugins[pkg/plugins]
   end
 
   Config --> API
@@ -86,7 +80,6 @@ flowchart TB
   MCP --> Tool
   Tool --> Sandbox
   Tool --> Security
-  Plugins --> Agent
 ```
 
 ### Middleware 拦截点
@@ -238,7 +231,7 @@ for event := range events {
 
 ### 并发使用
 
-SDK 完全线程安全，支持并发请求处理：
+Runtime 支持不同 `SessionID` 的并发调用；相同 `SessionID` 互斥执行。
 
 ```go
 // 同一个 runtime 可以安全地从多个 goroutine 使用
@@ -267,17 +260,17 @@ for i := 0; i < 10; i++ {
 }
 wg.Wait()
 
-// 相同 session ID 的请求会自动串行化
-go runtime.Run(ctx, api.Request{Prompt: "第一个", SessionID: "same"})
-go runtime.Run(ctx, api.Request{Prompt: "第二个", SessionID: "same"}) // 等待第一个完成
+// 相同 session ID 的请求需要由调用方串行化
+_, _ = runtime.Run(ctx, api.Request{Prompt: "第一个", SessionID: "same"})
+_, _ = runtime.Run(ctx, api.Request{Prompt: "第二个", SessionID: "same"})
 ```
 
 **并发保证：**
-- 所有 `Runtime` 方法都是线程安全的
-- 同会话请求自动排队（不会返回 `ErrConcurrentExecution`）
+- `Runtime` 方法可并发使用（不同会话互不影响）
+- 同会话并发请求返回 `ErrConcurrentExecution`
 - 不同会话请求并行执行
 - `Runtime.Close()` 优雅等待所有进行中的请求
-- 无需手动加锁或同步
+- 不同会话无需手动加锁；同会话如需排队由调用方自行处理
 
 ### 自定义工具注册
 
@@ -324,7 +317,6 @@ agentsdk-go/
 │   ├── message/                # 消息历史管理
 │   ├── api/                    # SDK 统一接口
 │   ├── config/                 # 配置加载
-│   ├── plugins/                # 插件系统
 │   ├── core/
 │   │   ├── events/             # 事件总线
 │   │   └── hooks/              # Hooks 执行器
@@ -356,8 +348,7 @@ SDK 使用 `.claude/` 目录进行配置，与 Claude Code 兼容：
 ├── settings.local.json  # 本地覆盖（已加入 .gitignore）
 ├── skills/           # Skills 定义
 ├── commands/         # 斜杠命令定义
-├── agents/           # Subagents 定义
-└── plugins/          # 插件目录
+└── agents/           # Subagents 定义
 ```
 
 ### 配置优先级
@@ -442,19 +433,9 @@ go test -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out
 ```
 
-### 测试覆盖率
+### 覆盖率
 
-#### 核心模块（全部 ≥90%）
-
-| 模块 | 覆盖率 |
-|------|--------|
-| pkg/runtime/subagents | 91.7% |
-| pkg/api | 91.0% |
-| pkg/mcp | 90.3% |
-| pkg/model | 92.2% |
-| pkg/sandbox | 90.5% |
-| pkg/security | 90.4% |
-| 平均 | 90.6% |
+覆盖率会随代码变化；请使用 `go test -coverprofile=coverage.out ./...` 生成报告。
 
 ## 构建
 
@@ -599,7 +580,6 @@ customMiddleware := middleware.Middleware{
 
 ### KISS（Keep It Simple, Stupid）
 
-- Agent 核心循环保持在 171 行
 - 单一职责，每个模块功能明确
 - 避免过度设计和不必要的抽象
 
@@ -611,7 +591,7 @@ customMiddleware := middleware.Middleware{
 
 ### 模块化
 
-- 13 个独立包，松耦合设计
+- 多个独立包，松耦合设计
 - 清晰的接口边界
 - 易于测试和维护
 

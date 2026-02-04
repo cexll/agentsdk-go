@@ -4,30 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**agentsdk-go** is a from-scratch, production-ready Go Agent SDK that mirrors Claude Code's 7 core capabilities with a pure architecture approach benchmarked to Claude Code's stack. This SDK targets CLI, CI/CD, and enterprise platforms, prioritizing KISS-friendly modularity, a zero-dependency core, and the middleware interception system that extends Claude Code with a unique innovation.
+**agentsdk-go** is a Go Agent SDK that implements core Claude Code-style runtime capabilities with a modular architecture. This SDK targets CLI, CI/CD, and enterprise platforms, prioritizing KISS-friendly modularity, a small core, and an optional middleware interception system for in-process extensibility.
 
-**Key metrics**:
-- ~20k LOC production code (excluding tests)
-- 90.5% average test coverage across core modules
-- Zero external dependencies in core packages
-- Agent core loop: 189 lines
+**Notes**:
+- Docs intentionally avoid hard-coded LOC/coverage numbers. Use `go test`, `go test -race`, and `go test -cover` when you need measurements.
 
 ## Architecture
 
-### Pure Claude Code Architecture (13 independent packages)
+### Architecture (core + feature packages)
 
 ```
-Core Layer (6 modules):
-├── agent/       - Agent core loop (<300 lines)
-├── middleware/  - 6-point interception system
+Core Layer:
+├── agent/       - Agent core loop
+├── middleware/  - Optional in-process interception (six stages)
 ├── model/       - Anthropic model adapter
 ├── tool/        - Tool registry & execution
 ├── message/     - In-memory message history
 └── api/         - Unified SDK interface
 
-Claude Code Features (7 modules):
+Feature Layer:
 ├── config/      - Configuration loading & hot-reload
-├── plugins/     - Plugin system with signature verification
 ├── core/
 │   ├── events/  - Event bus
 │   └── hooks/   - Hooks executor
@@ -36,7 +32,8 @@ Claude Code Features (7 modules):
 ├── runtime/
 │   ├── skills/     - Skills management
 │   ├── subagents/  - Subagents management
-│   └── commands/   - Slash commands parser
+│   ├── commands/   - Slash commands parser
+│   └── tasks/      - Task tracking and dependencies
 └── security/    - Security utilities
 ```
 
@@ -152,11 +149,11 @@ make coverage
 
 ### Agent Core Loop
 
-**Location**: `pkg/agent/agent.go` (189 lines)
+**Location**: `pkg/agent/agent.go`
 
 The agent loop is intentionally kept concise. Key points:
 - Uses context for cancellation and timeout
-- Executes middleware at 6 distinct stages
+- Executes middleware at each stage
 - Limits iterations via `MaxIterations` option
 - Returns `ModelOutput` with content, tool calls, and completion status
 
@@ -225,8 +222,7 @@ The SDK follows Claude Code's `.claude/` directory structure:
 ├── settings.local.json # Developer overrides (gitignored)
 ├── skills/           # Skills definitions
 ├── commands/         # Slash commands
-├── agents/           # Subagents definitions
-└── plugins/          # Plugin directory
+└── agents/           # Subagents definitions
 ```
 
 Configuration precedence (highest → lowest):
@@ -274,11 +270,11 @@ Network isolation via allow-list for outbound connections.
 
 ## Testing Strategy
 
-### Test Coverage Requirements
+### Test Expectations
 
-- Core modules: ≥90% coverage
-- New features: Must include tests
-- Use table-driven tests for multiple scenarios
+- New features and bug fixes must include tests where practical.
+- Prefer table-driven tests for multiple scenarios.
+- Coverage targets are not hard-coded in docs; generate a report with `go test -coverprofile=coverage.out ./...` when needed.
 
 ### Test File Patterns
 
@@ -341,14 +337,14 @@ Key documentation files:
 ## Project Principles
 
 This codebase follows Linus Torvalds' philosophy:
-- **KISS** - Keep It Simple: Single responsibility, core files <300 lines
-- **YAGNI** - You Aren't Gonna Need It: Zero dependencies, extend as needed
-- **Never Break Userspace** - API stability, backward compatibility
+- **KISS** - Keep It Simple: Single responsibility, boring code
+- **YAGNI** - You Aren't Gonna Need It: Keep dependencies minimal, extend as needed
+- **Compatibility** - No API stability guarantees; keep the surface small
 - **大道至简** - Simple interfaces, refined implementation
 
 ## Important File Locations
 
-- Agent core: `pkg/agent/agent.go` (189 lines)
+- Agent core: `pkg/agent/agent.go`
 - Tool registry: `pkg/tool/registry.go`
 - Tool executor: `pkg/tool/executor.go`
 - Built-in tools: `pkg/tool/builtin/bash.go`, `pkg/tool/builtin/file.go`, `pkg/tool/builtin/grep.go`, `pkg/tool/builtin/glob.go`
@@ -360,19 +356,15 @@ This codebase follows Linus Torvalds' philosophy:
 - CLI tool: `cmd/cli/main.go`
 - HTTP server example: `examples/03-http/main.go`
 
-When adding new features, maintain the modular structure and keep test coverage ≥90%.
+When adding new features, maintain the modular structure and add tests.
 
 ## Code Style & Conventions
 
 ### File Size Limit
 
-**Target**: Keep files under 300 lines for core logic, under 500 lines for feature modules. This project explicitly avoids the "巨型单文件" anti-pattern found in other SDKs.
+Prefer small files and split by responsibility. Avoid monolithic files that mix unrelated concerns.
 
-Current status:
-- Agent core: 189 lines ✓
-- Most core modules: <300 lines ✓
-
-If a file approaches these limits:
+If a file starts growing beyond a reasonable size:
 1. Split by responsibility (e.g., separate validators, helpers)
 2. Extract interfaces to their own files
 3. Move test helpers to `*_helpers_test.go`
@@ -508,7 +500,6 @@ Register before runtime creation via config or programmatically.
 
 ## Performance Considerations
 
-- **Zero allocations in hot paths**: Agent loop avoids unnecessary allocations
 - **LRU session cache**: Prevents unbounded memory growth
 - **Streaming preferred**: Use `RunStream` for long-running tasks to get immediate feedback
 - **Context timeout**: Always set reasonable timeouts on context
@@ -529,11 +520,11 @@ No known issues.
 
 ## Testing Strategy
 
-### Test Coverage Requirements
+### Test Expectations
 
-- Core modules: ≥90% coverage
-- New features: Must include tests
-- Use table-driven tests for multiple scenarios
+- New features and bug fixes must include tests where practical.
+- Prefer table-driven tests for multiple scenarios.
+- Coverage targets are not hard-coded in docs; generate a report with `go test -coverprofile=coverage.out ./...` when needed.
 
 ### Test Timeout Handling
 

@@ -35,7 +35,6 @@ type runConfig struct {
 	enableSkills      bool
 	enableSubagents   bool
 	enableCommands    bool
-	enablePlugins     bool
 	enableTrace       bool
 	traceDir          string
 	traceSkills       bool
@@ -74,7 +73,7 @@ func main() {
 		log.Fatalf("resolve project root: %v", err)
 	}
 
-	settingsOverride := &config.Settings{Env: map[string]string{"ADVANCED_EXAMPLE": "true"}, EnabledPlugins: map[string]bool{"advanced-sample": true}}
+	settingsOverride := &config.Settings{Env: map[string]string{"ADVANCED_EXAMPLE": "true"}}
 
 	mw := buildMiddlewares(cfg, logger)
 	hooks := buildHooks(logger, cfg.hookTimeout)
@@ -115,12 +114,6 @@ func main() {
 
 	if cfg.enableSandbox {
 		opts.Sandbox = buildSandboxOptions(cfg, absRoot)
-	}
-
-	if cfg.enablePlugins {
-		// Plugin discovery happens automatically off ProjectRoot
-	} else {
-		opts.SettingsOverrides.EnabledPlugins = map[string]bool{}
 	}
 
 	rt, err := api.New(ctx, opts)
@@ -178,7 +171,6 @@ func parseConfig() runConfig {
 	flag.BoolVar(&cfg.enableSkills, "enable-skills", true, "enable skills registry")
 	flag.BoolVar(&cfg.enableSubagents, "enable-subagents", true, "enable subagent dispatcher")
 	flag.BoolVar(&cfg.enableCommands, "enable-commands", true, "enable slash commands parser")
-	flag.BoolVar(&cfg.enablePlugins, "enable-plugins", true, "discover .claude-plugin")
 	flag.BoolVar(&cfg.enableTrace, "enable-trace", true, "record trace middleware output")
 	flag.StringVar(&cfg.traceDir, "trace-dir", "trace-out", "trace output directory")
 	flag.BoolVar(&cfg.traceSkills, "trace-skills", false, "log skill body lengths before/after agent run")
@@ -252,15 +244,6 @@ func printSummary(resp *api.Response, cfg runConfig, mw middlewareBundle, hooks 
 	if cfg.enableSandbox {
 		fmt.Println("\nSandbox:")
 		fmt.Printf("roots=%v allow=%v domains=%v limits=%+v\n", resp.SandboxSnapshot.Roots, resp.SandboxSnapshot.AllowedPaths, resp.SandboxSnapshot.AllowedDomains, resp.SandboxSnapshot.ResourceLimits)
-	}
-
-	if cfg.enablePlugins {
-		if plugs := pluginSummary(resp); len(plugs) > 0 {
-			fmt.Println("\nPlugins:")
-			for _, line := range plugs {
-				fmt.Println("- " + line)
-			}
-		}
 	}
 
 	if cfg.enableTrace {

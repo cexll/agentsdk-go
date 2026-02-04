@@ -220,9 +220,9 @@ bus.Close()
 
 ## pkg/api — Unified Entry, Request, Response
 
-- `type Options` (`pkg/api/options.go:52`) configures Runtime. Key fields: `EntryPoint`, `Mode ModeContext`, `ProjectRoot`, `ClaudeDir`, `Model model.Model`, `ModelFactory`, `SystemPrompt`, `Middleware []middleware.Middleware`, `MiddlewareTimeout`, `MaxIterations`, `Timeout`, `TokenLimit`, `MaxSessions`, `Tools []tool.Tool`, `EnabledBuiltinTools`, `CustomTools`, `MCPServers []string`, `TypedHooks`, `HookMiddleware`, `Skills`, `Commands`, `Subagents`, `Sandbox SandboxOptions`. `withDefaults` sets `EntryPoint`, `Mode.EntryPoint`, `ProjectRoot`, `Sandbox.Root`, `MaxSessions`.
+- `type Options` (`pkg/api/options.go:52`) configures Runtime. Key fields: `EntryPoint`, `Mode ModeContext`, `ProjectRoot`, `ClaudeDir`, `Model model.Model`, `ModelFactory`, `SystemPrompt`, `Middleware []middleware.Middleware`, `MiddlewareTimeout`, `MaxIterations`, `Timeout`, `TokenLimit`, `MaxSessions`, `Tools []tool.Tool`, `EnabledBuiltinTools`, `CustomTools`, `MCPServers []string`, `TypedHooks`, `HookMiddleware`, `Skills`, `Commands`, `Subagents`, `Sandbox SandboxOptions`, `PermissionRequestHandler`, `ApprovalQueue`, `ApprovalApprover`, `ApprovalWhitelistTTL`, `ApprovalWait`. `withDefaults` sets `EntryPoint`, `Mode.EntryPoint`, `ProjectRoot`, `Sandbox.Root`, `MaxSessions`.
 - `type Request` (`options.go:115`) includes `Prompt`, `Mode`, `SessionID`, `Traits`, `Tags`, `Channels`, `Metadata`, `TargetSubagent`, `ToolWhitelist`, `ForceSkills`. `request.normalized` (`pkg/api/agent.go:150`) fills `SessionID`, merges `Mode`, trims prompt.
-- `type Response` (`options.go:132`) combines Agent output, skill/command results, hook events, sandbox report, `Settings`, and plugin snapshots. `Result` embeds `model.Usage` and `ToolCalls`.
+- `type Response` (`options.go:132`) combines Agent output, skill/command results, hook events, sandbox report, and `Settings`. `Result` embeds `model.Usage` and `ToolCalls`.
 - `type Runtime struct` (`agent.go:24`) wires config loader, sandbox, tool registry/executor, hooks, `historyStore`, skills/commands/subagents managers, with `sync.RWMutex` for mutable config. Hook events are now recorded per request; `Runtime.recorder` is deprecated and retained only for backward compatibility.
 - `func New(ctx, opts) (*Runtime, error)` (`agent.go:40`) loads settings, resolves model, builds sandbox, registers tools/MCP servers, sets up hooks/skills/commands/subagents, and creates `newHistoryStore(opts.MaxSessions)`.
 - `func (rt *Runtime) Run(ctx, req) (*Response, error)` (`agent.go:70`) executes the sync flow: `prepare` validates prompt, fetches history, runs commands/skills/subagents, builds `middleware.State`, then calls `runAgent`.
@@ -304,14 +304,14 @@ for evt := range eventsCh {
 
 ## Concurrency Model
 
-`pkg/api.Runtime` is fully **thread-safe** with automatic session-level serialization:
+`pkg/api.Runtime` is designed to be safe for concurrent use. Different `SessionID`s may run in parallel; the same `SessionID` is mutually exclusive.
 
 **Concurrency Guarantees:**
-- **All Runtime methods are thread-safe**: `Run`, `RunStream`, `Close`, `Config`, `Settings`, `GetSessionStats`, etc. can be called concurrently from any goroutine.
-- **Same `SessionID`**: Requests are automatically queued and executed serially. The second request waits for the first to complete—no `ErrConcurrentExecution` is thrown (unless context is cancelled).
+- **Runtime methods are safe for concurrent use across sessions**: `Run`, `RunStream`, `Close`, `Config`, `Settings`, `GetSessionStats`, etc.
+- **Same `SessionID`**: Concurrent `Run`/`RunStream` calls return `ErrConcurrentExecution` (callers can queue/retry externally if they want serialization).
 - **Different `SessionID`s**: Execute in parallel without blocking each other.
-- **Graceful shutdown**: `Runtime.Close()` waits for all in-flight `Run`/`RunStream` calls to complete before releasing resources.
-- **Zero data races**: All internal state is protected by mutexes and verified with `go test -race`.
+- **Graceful shutdown**: `Runtime.Close()` waits for in-flight `Run`/`RunStream` calls to complete before releasing resources.
+- **Race checks**: validate with `go test -race ./...` after changes.
 
 **HTTP Server Pattern:**
 
@@ -468,7 +468,3 @@ rt, _ := api.New(ctx, api.Options{
 // Later, retrieve output:
 // {"name": "bash_output", "params": {"task_id": "abc123"}}
 ```
-
-# Completeness
-
-Sections stay within ~300–400 lines, covering core interfaces, signatures, examples, and notes, focusing on `pkg/message`, `pkg/core/events`, and `pkg/middleware` as key API references for the current SDK.

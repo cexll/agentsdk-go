@@ -347,7 +347,7 @@ for _, block := range resp.Content {
 2. **集成测试**: 验证实际 API 调用行为
 3. **边界测试**: 验证参数验证和错误处理
 
-**测试覆盖率要求**: ≥90%
+覆盖率不在文档固化阈值；请根据改动风险补齐必要测试，并以 CI/本地 `go test` 结果为准。
 
 ## 参考资料
 
@@ -362,7 +362,6 @@ for _, block := range resp.Content {
 ### v0.6.1 (2025-12-29)
 - ✅ 添加 `EnablePromptCache` 支持
 - ✅ 实现双层缓存配置（model + API）
-- ✅ 测试覆盖率: model 92.9%, api 87.9%
 
 ### v0.6.0 及之前
 - ✅ 基础参数对接: Model, MaxTokens, Messages, System, Tools, Temperature, Metadata
@@ -375,7 +374,7 @@ for _, block := range resp.Content {
 2. 在 `pkg/model/anthropic.go` 的 `buildParams` 中添加参数转换
 3. 添加单元测试到 `pkg/model/anthropic_test.go`
 4. 更新本文档的对接状态表
-5. 提交 PR 并确保测试覆盖率 ≥90%
+5. 提交 PR 并确保相关测试通过
 
 ---
 

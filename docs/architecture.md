@@ -1,22 +1,18 @@
 # agentsdk-go 架构设计文档
 
-> 基于 16 个 Agent SDK 项目的横向对比与最佳实践提取
+> 早期调研笔记（含历史内容）
 >
 > 设计原则：KISS | YAGNI | Never Break Userspace | 大道至简
 
-**文档状态**: 本文档为项目初期的架构设计与调研文档，包含历史调研内容。当前版本 v0.4.0 已实现核心功能。
+**文档状态**: 本文档包含早期调研内容；实现现状以代码与测试为准。
 
-**v0.4.0 实现状态**:
-- ✅ 核心 Agent 循环 (189 行)
-- ✅ 6 点 Middleware 拦截
-- ✅ 多模型支持 (ModelFactory)
-- ✅ Token 统计 & 自动 Compact
-- ✅ 异步 Bash & DisallowedTools
-- ✅ Rules 配置 (.claude/rules/)
-- ✅ OpenTelemetry & UUID 追踪
-- ✅ MCP 集成 (stdio/SSE)
-- ✅ Hooks 系统 (Shell 命令)
-- ✅ 测试覆盖率 88-96%
+**实现范围（概览）**:
+- Agent 核心循环 + Tool 执行
+- Middleware（6 点拦截）
+- Hooks（Shell）
+- MCP（stdio/SSE）
+- Sandbox（FS/Network/Resource）
+- Runtime 扩展：Skills / Commands / Subagents / Tasks
 
 ---
 
@@ -109,7 +105,6 @@
 #### 🎯 扩展性
 - **Hook 系统**: 统一的生命周期钩子
 - **MCP 集成**: Kode-cli/Mini-Agent 的 Model Context Protocol
-- **Plugin 架构**: opencode 的插件加载机制
 
 ### 2.3 共性缺陷（需规避）
 
@@ -128,18 +123,9 @@
 - **Skills**: 注册阶段只记录路径与 handler stub，不读取 SKILL.md；首个 `Execute` 前通过 `sync.Once` 读取文件并解析 frontmatter+body。
 - **Commands**: 启动仅做元数据探测（1 次 meta read），命令体和 stat 在首次 `Handle` 时才触发；读取与解析同样由 `sync.Once` 包裹。
 
-#### 2.4.2 基准测试数据（每 op，100 次迭代平均）
-| Benchmark | 启动时 IO | 首次使用 IO | 内存分配 |
-|-----------|-----------|-------------|----------|
-| Skills 懒加载 | 0 startup-read/op | 3.000 body-read/op | 2,801,190 B/op · 18,304 allocs/op |
-| Commands 懒加载 | 0 startup-body-read/op · 1.000 startup-meta-read/op | 1.000 body-read/op · 1.000 stat/op | 2,426,483 B/op · 12,800 allocs/op |
-| Runtime Startup（含懒加载管线） | - | - | 7,866,045 B/op · 52,630 allocs/op；24.73 ms/op |
-
-#### 2.4.3 性能收益分析
-- **启动时间**: `BenchmarkRuntimeStartup` 显示完整 CLI 初始化（带懒加载）为 ~24.7 ms/op；主要耗时不再来自技能/命令文件 IO。
-- **IO 转移**: Skills/Commands 启动阶段的正文读取从“至少 1 次”降到 **0**（假设原实现 eager-read），IO 完全移到首次调用，启动路径的 body read 降幅 100%；Commands 仅保留 1 次 meta read 以获取 frontmatter。
-- **首用成本**: Skills 首次执行仍有 3 次 body-read/op（多次解析同一正文），Commands 为 1 次 body read + 1 次 stat，可继续通过缓存解析结果来压缩冷路径。
-- **内存占用**: 启动阶段不再持有正文缓存，B/op 下降到 ~2.4–2.8 MB（技能/命令加载），较运行时全量初始化的 7.86 MB 明显更轻。
+#### 2.4.2 性能说明（不固化指标）
+- 懒加载的目标是减少启动阶段的文件读取，把正文读取推迟到首次执行。
+- 具体耗时/分配随机器、仓库规模、系统缓存变化；需要量化时请运行 `test/benchmarks` 下的基准测试并以结果为准。
 
 #### 2.4.4 实现要点
 - `sync.Once` 包裹正文与 frontmatter 解析，确保并发下只读一次。
@@ -151,7 +137,7 @@
 #### 2.5.1 设计动机（为何需要 6 个拦截点）
 - **全链路治理**: 在 Agent→Model→Tool→回传的每个阶段暴露可插拔治理面，避免单点 Hook 无法覆盖工具调用与结果回填。
 - **短路保护**: 任一环节发现违规（如越权工具、超时响应）立即中断，减少无效推理成本。
-- **对标 Claude Code**: Claude Code 仅在模型/工具上提供有限 Hook，agentsdk-go 将拦截扩展为 6 段并内建超时，形成差异化优势。
+- **与 Claude Code 的关系**: Claude Code 以 hooks 为主要扩展点；本项目额外提供可选的 in-process middleware，用于更细粒度的治理/可观测。
 
 #### 2.5.2 拦截点详解
 - `before_agent`: 会话入口前做租户/速率/审计初始化。
@@ -292,7 +278,6 @@ _ = a.mw.Execute(ctx, middleware.StageAfterModel, state)
 │  │  ├─ pkg/sandbox    - 文件系统隔离                           │ │
 │  │  ├─ pkg/security   - 命令校验 & 路径解析                     │ │
 │  │  ├─ pkg/mcp        - MCP 客户端                             │ │
-│  │  └─ pkg/plugins    - 插件系统 & 签名验证                     │ │
 │  └────────────────────────────────────────────────────────────┘ │
 │                              ↓                                   │
 │  ┌────────────────────────────────────────────────────────────┐ │
@@ -383,13 +368,9 @@ agentsdk-go/
 │   ├── sandbox/                  # 沙箱隔离
 │   │   └── manager.go            # 文件系统限制
 │   │
-│   ├── security/                 # 安全模块
-│   │   ├── validator.go          # 命令校验
-│   │   └── resolver.go           # 路径解析
-│   │
-│   └── plugins/                  # 插件系统
-│       ├── manager.go            # 插件管理
-│       └── packager/             # 插件打包
+│   └── security/                 # 安全模块
+│       ├── validator.go          # 命令校验
+│       └── resolver.go           # 路径解析
 │
 ├── cmd/cli/                      # CLI 入口
 │   └── main.go
@@ -1596,7 +1577,7 @@ func main() {
   - [ ] 消息追加/列表
 
 - [x] 测试
-  - [ ] 单元测试 (覆盖率 >80%)
+  - [ ] 单元测试（风险驱动；覆盖率不在文档固化阈值）
   - [ ] 集成测试
   - [ ] 示例代码
 
@@ -1697,7 +1678,7 @@ func main() {
 ### 7.1 测试策略
 
 #### 单元测试
-- 覆盖率要求: >90%
+- 覆盖率：不在文档固化阈值；按改动风险补齐关键路径，并以 CI/本地 `go test` 结果为准。
 - 所有公开接口必须有测试
 - 使用 table-driven tests
 
