@@ -1,6 +1,7 @@
 package security
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -138,6 +139,51 @@ func TestApprovalQueueDenyFlow(t *testing.T) {
 	}
 	if _, err := q.Deny(approved.ID, "ops", "late"); err == nil {
 		t.Fatalf("expected deny after approval to error")
+	}
+}
+
+func TestApprovalQueueWaitResolves(t *testing.T) {
+	q, _ := newTestQueue(t)
+	rec, err := q.Request("sess", "ls", nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(20 * time.Millisecond)
+		_, _ = q.Approve(rec.ID, "ops", 0)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	resolved, err := q.Wait(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	if resolved.State != ApprovalApproved {
+		t.Fatalf("expected approved, got %s", resolved.State)
+	}
+	<-done
+}
+
+func TestApprovalQueueWaitContextCancelled(t *testing.T) {
+	q, _ := newTestQueue(t)
+	rec, err := q.Request("sess", "ls", nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	if _, err := q.Wait(ctx, rec.ID); err == nil {
+		t.Fatalf("expected wait timeout error")
+	}
+	if _, err := q.Wait(context.Background(), ""); err == nil {
+		t.Fatalf("expected wait validation error")
 	}
 }
 

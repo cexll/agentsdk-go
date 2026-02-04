@@ -183,6 +183,26 @@ func TestCheckToolPermissionConcurrent(t *testing.T) {
 	}
 }
 
+func TestCompilePermissionRuleErrors(t *testing.T) {
+	if _, err := compilePermissionRule(" "); err == nil {
+		t.Fatalf("expected empty rule error")
+	}
+	if _, err := compilePermissionRule("Read("); err == nil {
+		t.Fatalf("expected malformed rule error")
+	}
+	if _, err := compilePermissionRule("Bash(regex:["); err == nil {
+		t.Fatalf("expected regex compile error")
+	}
+	rule, err := compilePermissionRule("Read(**/*.md)")
+	if err != nil || rule == nil || rule.tool == "" {
+		t.Fatalf("expected compiled rule, got %v", err)
+	}
+	pathRule, err := compilePermissionRule("secrets/**")
+	if err != nil || pathRule == nil || pathRule.toolMatch == nil {
+		t.Fatalf("expected path rule matcher")
+	}
+}
+
 // mustDecision is a helper to keep tests concise.
 func (s *Sandbox) mustDecision(t *testing.T, tool string, params map[string]any) PermissionDecision {
 	t.Helper()

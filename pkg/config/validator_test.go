@@ -35,10 +35,6 @@ func TestValidateSettingsSuccess(t *testing.T) {
 				SocksProxyPort: &socksPort,
 			},
 		},
-		EnabledPlugins: map[string]bool{"custom-plugin@official": true},
-		ExtraKnownMarketplaces: map[string]MarketplaceSource{
-			"official": {Source: "github"},
-		},
 		StatusLine:       &StatusLineConfig{Type: "command", Command: "echo ok"},
 		ForceLoginMethod: "claudeai",
 	}
@@ -86,10 +82,6 @@ func TestValidateSettingsAggregatesErrors(t *testing.T) {
 				SocksProxyPort: &badSocks,
 			},
 		},
-		EnabledPlugins: map[string]bool{"broken-key": true},
-		ExtraKnownMarketplaces: map[string]MarketplaceSource{
-			"broken": {Source: "unknown"},
-		},
 		StatusLine:       &StatusLineConfig{Type: "unknown"},
 		ForceLoginMethod: "invalid",
 	}
@@ -106,8 +98,6 @@ func TestValidateSettingsAggregatesErrors(t *testing.T) {
 	require.Contains(t, msg, "sandbox.excludedCommands[0]")
 	require.Contains(t, msg, "bashOutput.syncThresholdBytes")
 	require.Contains(t, msg, "bashOutput.asyncThresholdBytes")
-	require.Contains(t, msg, "enabledPlugins[broken-key]")
-	require.Contains(t, msg, "extraKnownMarketplaces[broken]")
 	require.Contains(t, msg, "statusLine.type")
 	require.Contains(t, msg, "forceLoginMethod")
 }
@@ -135,22 +125,6 @@ func TestValidatePortRangeBoundaries(t *testing.T) {
 	require.NoError(t, validatePortRange(65535))
 	require.Error(t, validatePortRange(0))
 	require.Error(t, validatePortRange(70000))
-}
-
-func TestValidatePluginKeyCases(t *testing.T) {
-	require.NoError(t, validatePluginKey("plug-1@market"))
-	for _, key := range []string{"", "missingatsign", "plug@", "@market", "bad$@market"} {
-		require.Error(t, validatePluginKey(key))
-	}
-}
-
-func TestValidateMarketplaceSource(t *testing.T) {
-	require.Error(t, validateMarketplaceSource(nil))
-	require.ErrorContains(t, validateMarketplaceSource(&MarketplaceSource{}), "empty")
-	require.ErrorContains(t, validateMarketplaceSource(&MarketplaceSource{Source: "s3"}), "unsupported")
-	require.NoError(t, validateMarketplaceSource(&MarketplaceSource{Source: "git"}))
-	require.NoError(t, validateMarketplaceSource(&MarketplaceSource{Source: "github"}))
-	require.NoError(t, validateMarketplaceSource(&MarketplaceSource{Source: "directory"}))
 }
 
 func TestValidatePermissionsConfig_DisableAndDirs(t *testing.T) {

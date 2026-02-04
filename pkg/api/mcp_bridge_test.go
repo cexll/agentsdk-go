@@ -4,28 +4,7 @@ import (
 	"testing"
 
 	"github.com/cexll/agentsdk-go/pkg/config"
-	"github.com/cexll/agentsdk-go/pkg/plugins"
 )
-
-func TestParseMCPEntryBuildsCommandSpec(t *testing.T) {
-	spec, name, url := parseMCPEntry(map[string]any{
-		"name":    "echoer",
-		"command": "echo",
-		"args":    []any{"hello", "world"},
-	})
-	if spec == "" || name != "echoer" || url != spec {
-		t.Fatalf("unexpected entry parse: spec=%q name=%q url=%q", spec, name, url)
-	}
-	if spec[:8] != "stdio://" {
-		t.Fatalf("expected stdio scheme, got %s", spec)
-	}
-}
-
-func TestParseMCPEntryIgnoresInvalidTypes(t *testing.T) {
-	if spec, _, _ := parseMCPEntry("invalid"); spec != "" {
-		t.Fatalf("expected empty spec for invalid entry, got %q", spec)
-	}
-}
 
 func TestAllowedByManagedPoliciesPrefersDeny(t *testing.T) {
 	deny := []config.MCPServerRule{{ServerName: "svc"}, {URL: "http://svc"}}
@@ -43,51 +22,41 @@ func TestCollectMCPServersMergesSourcesAndDedups(t *testing.T) {
 			},
 		},
 	}
-	plugin := &plugins.ClaudePlugin{
-		Name: "plug",
-		MCPConfig: &plugins.MCPConfig{
-			Data: map[string]any{"servers": []any{
-				map[string]any{"name": "plug", "url": "http://plugin.example"},
-				map[string]any{"url": "http://settings.example"},
-			}},
-		},
-	}
-	servers := collectMCPServers(settings, []*plugins.ClaudePlugin{plugin}, []string{"http://settings.example"})
+	servers := collectMCPServers(settings, []string{"http://settings.example", "http://other.example"})
 	if len(servers) != 2 {
 		t.Fatalf("expected deduped two servers, got %d: %+v", len(servers), servers)
 	}
 }
 
-func TestPluginMCPServersRespectsEnableDisable(t *testing.T) {
-	enable := true
+func TestCollectMCPServersPreservesSettingsOptions(t *testing.T) {
 	settings := &config.Settings{
-		EnableAllProjectMCPServers: &enable,
-		EnabledMCPJSONServers:      []string{"keep"},
-		DisabledMCPJSONServers:     []string{"drop"},
-	}
-	plugin := &plugins.ClaudePlugin{
-		Name: "plug",
-		MCPConfig: &plugins.MCPConfig{
-			Data: map[string]any{"servers": []any{
-				map[string]any{"name": "keep", "url": "http://ok"},
-				map[string]any{"name": "drop", "url": "http://denied"},
-			}},
+		MCP: &config.MCPConfig{
+			Servers: map[string]config.MCPServerConfig{
+				"api": {
+					Type:           "http",
+					URL:            "http://settings.example",
+					Headers:        map[string]string{"Authorization": "Bearer x"},
+					Env:            map[string]string{"K": "V"},
+					TimeoutSeconds: 7,
+				},
+			},
 		},
 	}
-	entries := pluginMCPServers(settings, []*plugins.ClaudePlugin{plugin})
-	if len(entries) != 1 || entries[0].Name != "keep" {
-		t.Fatalf("expected only enabled server, got %+v", entries)
+	servers := collectMCPServers(settings, nil)
+	if len(servers) != 1 {
+		t.Fatalf("expected one server, got %d: %+v", len(servers), servers)
 	}
-}
-
-func TestDescribeRuleFormatsNicely(t *testing.T) {
-	rule := config.MCPServerRule{ServerName: "svc", URL: "http://example"}
-	if out := describeRule(rule); out == "" || out != "svc (http://example)" {
-		t.Fatalf("unexpected describe rule output: %q", out)
+	if servers[0].Name != "api" {
+		t.Fatalf("expected api server name, got %q", servers[0].Name)
 	}
-	onlyURL := config.MCPServerRule{URL: "http://only"}
-	if out := describeRule(onlyURL); out != "http://only" {
-		t.Fatalf("expected URL fallback, got %q", out)
+	if servers[0].TimeoutSeconds != 7 {
+		t.Fatalf("expected timeoutSeconds=7, got %d", servers[0].TimeoutSeconds)
+	}
+	if servers[0].Headers["Authorization"] != "Bearer x" {
+		t.Fatalf("expected headers propagated, got %+v", servers[0].Headers)
+	}
+	if servers[0].Env["K"] != "V" {
+		t.Fatalf("expected env propagated, got %+v", servers[0].Env)
 	}
 }
 
@@ -102,27 +71,29 @@ func TestMatchesRuleIgnoresEmptyRule(t *testing.T) {
 	}
 }
 
-func TestStringSetTrimsAndDedups(t *testing.T) {
-	set := stringSet([]string{" one ", "ONE", "", "two"})
-	if len(set) != 3 || !set["one"] || !set["ONE"] || !set["two"] {
-		t.Fatalf("stringSet did not trim/preserve distinct values: %+v", set)
+func TestCollectMCPServersStdioSpec(t *testing.T) {
+	settings := &config.Settings{
+		MCP: &config.MCPConfig{
+			Servers: map[string]config.MCPServerConfig{
+				"stdio": {Type: "stdio", Command: "echo", Args: []string{"hi"}},
+			},
+		},
+	}
+	servers := collectMCPServers(settings, nil)
+	if len(servers) != 1 {
+		t.Fatalf("expected one server, got %d", len(servers))
+	}
+	if servers[0].Spec != "stdio://echo hi" {
+		t.Fatalf("unexpected stdio spec %q", servers[0].Spec)
 	}
 }
 
-func TestSettingsMCPHelpersNilSafe(t *testing.T) {
-	if settingsEnabledMCP(nil) != nil || settingsDisabledMCP(nil) != nil || managedAllowRules(nil) != nil || managedDenyRules(nil) != nil {
-		t.Fatal("expected nil-safe helpers to return nil slices")
+func TestAllowedByManagedPoliciesAllowList(t *testing.T) {
+	allow := []config.MCPServerRule{{URL: "http://allowed"}}
+	if !allowedByManagedPolicies("svc", "http://allowed", allow, nil) {
+		t.Fatalf("expected allowlist to permit matching target")
 	}
-	settings := &config.Settings{
-		EnabledMCPJSONServers:  []string{"a"},
-		DisabledMCPJSONServers: []string{"b"},
-		AllowedMcpServers:      []config.MCPServerRule{{ServerName: "svc"}},
-		DeniedMcpServers:       []config.MCPServerRule{{URL: "http://deny"}},
-	}
-	if len(settingsEnabledMCP(settings)) != 1 || len(settingsDisabledMCP(settings)) != 1 {
-		t.Fatalf("unexpected enabled/disabled slices: %+v %+v", settingsEnabledMCP(settings), settingsDisabledMCP(settings))
-	}
-	if len(managedAllowRules(settings)) != 1 || len(managedDenyRules(settings)) != 1 {
-		t.Fatalf("unexpected managed rules slices")
+	if allowedByManagedPolicies("svc", "http://denied", allow, nil) {
+		t.Fatalf("expected allowlist to deny non-matching target")
 	}
 }

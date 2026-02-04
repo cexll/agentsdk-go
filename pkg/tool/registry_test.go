@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -168,6 +169,40 @@ func TestRegisterMCPServerSSE(t *testing.T) {
 	}
 	if !strings.Contains(res.Output, "echo:ping") {
 		t.Fatalf("unexpected output: %s", res.Output)
+	}
+}
+
+func TestRegisterMCPServerSSERefreshesOnListChanged(t *testing.T) {
+	h := newRegistrySSEHarness(t)
+	defer h.Close()
+
+	r := NewRegistry()
+	if err := r.RegisterMCPServer(context.Background(), h.URL(), ""); err != nil {
+		t.Fatalf("register MCP: %v", err)
+	}
+
+	h.server.AddTool(&mcpsdk.Tool{
+		Name:        "sum",
+		Description: "sum tool",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(context.Context, *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "sum"}}}, nil
+	})
+
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-deadline.C:
+			t.Fatal("timed out waiting for MCP tool refresh")
+		case <-ticker.C:
+			if _, err := r.Get("sum"); err == nil {
+				return
+			}
+		}
 	}
 }
 

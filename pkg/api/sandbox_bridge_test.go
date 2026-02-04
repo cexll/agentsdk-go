@@ -80,3 +80,20 @@ func TestBuildSandboxManagerEnabledByDefault(t *testing.T) {
 		t.Fatal("expected path check to fail when sandbox enabled by default")
 	}
 }
+
+func TestNoopFileSystemPolicyRootsAndAllow(t *testing.T) {
+	p := &noopFileSystemPolicy{root: t.TempDir()}
+	p.Allow("ignored")
+	roots := p.Roots()
+	if len(roots) != 1 || roots[0] == "" {
+		t.Fatalf("unexpected roots %+v", roots)
+	}
+
+	var nilPolicy *noopFileSystemPolicy
+	if roots := nilPolicy.Roots(); roots != nil {
+		t.Fatalf("expected nil roots for nil policy, got %+v", roots)
+	}
+	if roots := (&noopFileSystemPolicy{root: "   "}).Roots(); roots != nil {
+		t.Fatalf("expected nil roots for blank root, got %+v", roots)
+	}
+}

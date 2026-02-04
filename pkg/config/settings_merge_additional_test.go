@@ -35,46 +35,6 @@ func TestMergeStatusLineOverrides(t *testing.T) {
 	require.NotSame(t, lower, copied)
 }
 
-func TestMergeMarketplaceConfigMap(t *testing.T) {
-	lower := map[string]*MarketplaceConfig{
-		"oss": {
-			EnabledPlugins:         map[string]bool{"p1@oss": true},
-			ExtraKnownMarketplaces: map[string]MarketplaceSource{"oss": {Source: "directory", Path: "/lower"}},
-		},
-	}
-	higher := map[string]*MarketplaceConfig{
-		"oss": {
-			EnabledPlugins:         map[string]bool{"p1@oss": false, "p2@oss": true},
-			ExtraKnownMarketplaces: map[string]MarketplaceSource{"oss": {Source: "directory", Path: "/higher"}},
-		},
-		"new": {
-			EnabledPlugins: map[string]bool{"fresh@new": true},
-		},
-	}
-
-	out := mergeMarketplaceConfigMap(lower, higher)
-	require.Len(t, out, 2)
-	require.Equal(t, map[string]bool{"p1@oss": false, "p2@oss": true}, out["oss"].EnabledPlugins)
-	require.Equal(t, "/higher", out["oss"].ExtraKnownMarketplaces["oss"].Path)
-	require.Equal(t, map[string]bool{"fresh@new": true}, out["new"].EnabledPlugins)
-
-	// no aliasing
-	higher["oss"].EnabledPlugins["p3@oss"] = true
-	require.NotContains(t, out["oss"].EnabledPlugins, "p3@oss")
-}
-
-func TestMergeMarketplaceConfigNilHandling(t *testing.T) {
-	require.Nil(t, mergeMarketplaceConfig(nil, nil))
-
-	base := &MarketplaceConfig{EnabledPlugins: map[string]bool{"a": true}}
-	require.Equal(t, base.EnabledPlugins, mergeMarketplaceConfig(base, nil).EnabledPlugins)
-
-	higher := &MarketplaceConfig{ExtraKnownMarketplaces: map[string]MarketplaceSource{"oss": {Source: "git"}}}
-	out := mergeMarketplaceConfig(base, higher)
-	require.Equal(t, map[string]bool{"a": true}, out.EnabledPlugins)
-	require.Equal(t, "git", out.ExtraKnownMarketplaces["oss"].Source)
-}
-
 func TestMergeMCPServerRules(t *testing.T) {
 	lower := []MCPServerRule{{ServerName: "low"}}
 	higher := []MCPServerRule{{ServerName: "high"}}
@@ -100,3 +60,57 @@ func TestMergeMCPConfig(t *testing.T) {
 	out.Servers["base"] = MCPServerConfig{}
 	require.Equal(t, "node", lower.Servers["base"].Command)
 }
+
+func TestMergeHooksAndCloneHooks(t *testing.T) {
+	lower := &HooksConfig{
+		PreToolUse:        map[string]string{"a": "1"},
+		PostToolUse:       map[string]string{"b": "2"},
+		PermissionRequest: map[string]string{"p": "x"},
+	}
+	higher := &HooksConfig{
+		PreToolUse:   map[string]string{"a": "9", "c": "3"},
+		SessionStart: map[string]string{"s": "1"},
+	}
+
+	out := mergeHooks(lower, higher)
+	require.NotNil(t, out)
+	require.Equal(t, "9", out.PreToolUse["a"])
+	require.Equal(t, "3", out.PreToolUse["c"])
+	require.Equal(t, "2", out.PostToolUse["b"])
+	require.Equal(t, "x", out.PermissionRequest["p"])
+	require.Equal(t, "1", out.SessionStart["s"])
+
+	out.PreToolUse["a"] = "changed"
+	require.Equal(t, "1", lower.PreToolUse["a"])
+
+	require.Nil(t, mergeHooks(nil, nil))
+	require.NotSame(t, lower, mergeHooks(lower, nil))
+	require.NotSame(t, higher, mergeHooks(nil, higher))
+
+	cloned := cloneHooks(lower)
+	require.NotNil(t, cloned)
+	require.NotSame(t, lower, cloned)
+	require.Equal(t, lower.PreToolUse["a"], cloned.PreToolUse["a"])
+	cloned.PreToolUse["a"] = "z"
+	require.Equal(t, "1", lower.PreToolUse["a"])
+}
+
+func TestMergeBashOutput(t *testing.T) {
+	lower := &BashOutputConfig{
+		SyncThresholdBytes:  ptrInt(10),
+		AsyncThresholdBytes: ptrInt(20),
+	}
+	higher := &BashOutputConfig{
+		SyncThresholdBytes: ptrInt(99),
+	}
+	out := mergeBashOutput(lower, higher)
+	require.NotNil(t, out)
+	require.Equal(t, 99, *out.SyncThresholdBytes)
+	require.Equal(t, 20, *out.AsyncThresholdBytes)
+
+	require.Nil(t, mergeBashOutput(nil, nil))
+	require.NotNil(t, mergeBashOutput(lower, nil))
+	require.NotNil(t, mergeBashOutput(nil, higher))
+}
+
+func ptrInt(v int) *int { return &v }

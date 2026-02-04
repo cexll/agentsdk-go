@@ -15,154 +15,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
-func TestBuildMCPSessionTransportVariants(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	tests := []struct {
-		name         string
-		spec         string
-		wantEndpoint string
-		wantArgs     []string
-		wantType     string
-		wantErr      string
-	}{
-		{
-			name:     "stdio spec",
-			spec:     "stdio://echo test",
-			wantArgs: []string{"echo", "test"},
-			wantType: "command",
-		},
-		{
-			name:         "sse spec with guessed scheme",
-			spec:         "sse://localhost:8080",
-			wantEndpoint: "https://localhost:8080",
-			wantType:     "sse",
-		},
-		{
-			name:         "http spec uses sse transport",
-			spec:         "http://localhost:8080",
-			wantEndpoint: "http://localhost:8080",
-			wantType:     "sse",
-		},
-		{
-			name:         "http hint sse",
-			spec:         "http+sse://example.com/path",
-			wantEndpoint: "http://example.com/path",
-			wantType:     "sse",
-		},
-		{
-			name:         "https stream hint",
-			spec:         "https+stream://api.example.com",
-			wantEndpoint: "https://api.example.com",
-			wantType:     "streamable",
-		},
-		{
-			name:     "fallback stdio without scheme",
-			spec:     "printf hello",
-			wantArgs: []string{"printf", "hello"},
-			wantType: "command",
-		},
-		{
-			name:    "empty spec error",
-			spec:    "  ",
-			wantErr: "empty",
-		},
-		{
-			name:    "invalid http hint",
-			spec:    "http+invalid://example.com",
-			wantErr: "unsupported HTTP transport hint",
-		},
-		{
-			name:    "sse invalid scheme",
-			spec:    "sse://ftp://example.com",
-			wantErr: "unsupported scheme",
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			tr, err := buildMCPSessionTransport(ctx, tt.spec)
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
-				}
-				if tr != nil {
-					t.Fatalf("expected nil transport on error, got %T", tr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			switch v := tr.(type) {
-			case *mcp.CommandTransport:
-				if tt.wantType != "command" {
-					t.Fatalf("unexpected transport type %T", tr)
-				}
-				if len(tt.wantArgs) > 0 && !equalStringSlices(v.Command.Args, tt.wantArgs) {
-					t.Fatalf("command args = %v want %v", v.Command.Args, tt.wantArgs)
-				}
-			case *mcp.SSEClientTransport:
-				if tt.wantType != "sse" {
-					t.Fatalf("unexpected transport type %T", tr)
-				}
-				if v.Endpoint != tt.wantEndpoint {
-					t.Fatalf("endpoint = %s want %s", v.Endpoint, tt.wantEndpoint)
-				}
-			case *mcp.StreamableClientTransport:
-				if tt.wantType != "streamable" {
-					t.Fatalf("unexpected transport type %T", tr)
-				}
-				if v.Endpoint != tt.wantEndpoint {
-					t.Fatalf("endpoint = %s want %s", v.Endpoint, tt.wantEndpoint)
-				}
-			default:
-				t.Fatalf("unexpected transport type %T", tr)
-			}
-		})
-	}
-}
-
-func TestBuildSSETransportGuessAndErrors(t *testing.T) {
-	t.Parallel()
-
-	tr, err := buildSSETransport("example.com", true)
-	if err != nil {
-		t.Fatalf("buildSSETransport guess failed: %v", err)
-	}
-	sse, ok := tr.(*mcp.SSEClientTransport)
-	if !ok {
-		t.Fatalf("transport type %T", tr)
-	}
-	if sse.Endpoint != "https://example.com" {
-		t.Fatalf("endpoint = %s", sse.Endpoint)
-	}
-
-	if _, err := buildSSETransport("ftp://example.com", false); err == nil {
-		t.Fatalf("expected unsupported scheme error")
-	}
-}
-
-func TestBuildStreamableTransportErrors(t *testing.T) {
-	t.Parallel()
-
-	if _, err := buildStreamableTransport("ftp://example.com"); err == nil {
-		t.Fatalf("expected streamable transport error")
-	}
-}
-
-func TestBuildStdioTransportRejectsEmpty(t *testing.T) {
-	t.Parallel()
-
-	if _, err := buildStdioTransport(context.Background(), "   "); err == nil || !strings.Contains(err.Error(), "empty") {
-		t.Fatalf("expected empty command error, got %v", err)
-	}
-}
-
 func TestNonNilContext(t *testing.T) {
 	t.Parallel()
 
@@ -179,153 +31,11 @@ func TestNonNilContext(t *testing.T) {
 	}
 }
 
-func TestParseHTTPFamilySpec(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		spec         string
-		wantKind     string
-		wantEndpoint string
-		wantMatched  bool
-		wantErr      string
-	}{
-		{
-			name:         "sse hint",
-			spec:         "http+sse://example.com/root",
-			wantKind:     sseHintType,
-			wantEndpoint: "http://example.com/root",
-			wantMatched:  true,
-		},
-		{
-			name:         "stream hint",
-			spec:         "https+streamable://api.example.com",
-			wantKind:     httpHintType,
-			wantEndpoint: "https://api.example.com",
-			wantMatched:  true,
-		},
-		{
-			name:        "invalid hint",
-			spec:        "http+foo://example.com",
-			wantMatched: true,
-			wantErr:     "unsupported HTTP transport hint",
-		},
-		{
-			name:        "missing host",
-			spec:        "https+sse://",
-			wantMatched: true,
-			wantErr:     "missing host",
-		},
-		{
-			name:        "non http base",
-			spec:        "ws+sse://example.com",
-			wantMatched: false,
-		},
-		{
-			name:        "no hint present",
-			spec:        "https://example.com",
-			wantMatched: false,
-		},
-		{
-			name:        "parse failure",
-			spec:        "::::",
-			wantMatched: false,
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			kind, endpoint, matched, err := parseHTTPFamilySpec(tt.spec)
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
-				}
-			} else if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if matched != tt.wantMatched {
-				t.Fatalf("matched = %v want %v", matched, tt.wantMatched)
-			}
-			if tt.wantKind != "" && kind != tt.wantKind {
-				t.Fatalf("kind = %s want %s", kind, tt.wantKind)
-			}
-			if tt.wantEndpoint != "" && endpoint != tt.wantEndpoint {
-				t.Fatalf("endpoint = %s want %s", endpoint, tt.wantEndpoint)
-			}
-		})
-	}
-}
-
-func TestNormalizeHTTPURL(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		raw     string
-		guess   bool
-		want    string
-		wantErr string
-	}{
-		{
-			name:  "auto https guess",
-			raw:   "localhost:8080",
-			guess: true,
-			want:  "https://localhost:8080",
-		},
-		{
-			name: "lowercase scheme",
-			raw:  "HTTP://Example.com/path",
-			want: "http://Example.com/path",
-		},
-		{
-			name:    "unsupported scheme",
-			raw:     "ftp://example.com",
-			wantErr: "unsupported scheme",
-		},
-		{
-			name:    "missing host",
-			raw:     "https://",
-			wantErr: "missing host",
-		},
-		{
-			name:    "no scheme without guess",
-			raw:     "example.com",
-			wantErr: "unsupported scheme",
-		},
-		{
-			name:    "empty string",
-			raw:     "   ",
-			wantErr: "empty",
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got, err := normalizeHTTPURL(tt.raw, tt.guess)
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got != tt.want {
-				t.Fatalf("normalized = %s want %s", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestRemoteToolDescription(t *testing.T) {
 	rt := &remoteTool{name: "r", description: "remote", schema: &JSONSchema{Type: "object"}}
+	if rt.Name() != "r" {
+		t.Fatalf("unexpected name %q", rt.Name())
+	}
 	if rt.Description() == "" || rt.Schema() == nil {
 		t.Fatalf("remote tool metadata missing")
 	}
@@ -339,7 +49,7 @@ func TestRegisterMCPServerRejectsEmptyPath(t *testing.T) {
 }
 
 func TestRegisterMCPServerInvalidTransportSpec(t *testing.T) {
-	restore := withStubMCPClient(t, func(_ context.Context, spec string) (*mcp.ClientSession, error) {
+	restore := withStubMCPClient(t, func(_ context.Context, spec string, _ mcpListChangedHandler) (*mcp.ClientSession, error) {
 		if spec != "stdio://invalid" {
 			t.Fatalf("unexpected spec %q", spec)
 		}
@@ -354,7 +64,7 @@ func TestRegisterMCPServerInvalidTransportSpec(t *testing.T) {
 
 func TestRegisterMCPServerUsesTimeoutContext(t *testing.T) {
 	var captured context.Context
-	restore := withStubMCPClient(t, func(ctx context.Context, spec string) (*mcp.ClientSession, error) {
+	restore := withStubMCPClient(t, func(ctx context.Context, spec string, _ mcpListChangedHandler) (*mcp.ClientSession, error) {
 		captured = ctx
 		return nil, fmt.Errorf("dial failed")
 	})
@@ -384,8 +94,43 @@ func TestRegisterMCPServerUsesTimeoutContext(t *testing.T) {
 	}
 }
 
+func TestRegisterMCPServerWithOptionsUsesCustomTimeoutContext(t *testing.T) {
+	orig := newMCPClientWithOptions
+	var captured context.Context
+	newMCPClientWithOptions = func(ctx context.Context, spec string, opts MCPServerOptions, _ mcpListChangedHandler) (*mcp.ClientSession, error) {
+		captured = ctx
+		return nil, fmt.Errorf("dial failed")
+	}
+	defer func() { newMCPClientWithOptions = orig }()
+
+	err := NewRegistry().RegisterMCPServerWithOptions(context.Background(), "stdio://fail", "", MCPServerOptions{
+		Timeout: 2 * time.Second,
+	})
+	if err == nil || !strings.Contains(err.Error(), "connect MCP client") {
+		t.Fatalf("expected connect error, got %v", err)
+	}
+	if captured == nil {
+		t.Fatalf("connect context not passed")
+	}
+	deadline, ok := captured.Deadline()
+	if !ok {
+		t.Fatalf("connect context missing deadline")
+	}
+	if remaining := time.Until(deadline); remaining > 2*time.Second || remaining < time.Second {
+		t.Fatalf("deadline not ~2s, remaining %v", remaining)
+	}
+	select {
+	case <-captured.Done():
+	default:
+		t.Fatalf("connect context not canceled after return")
+	}
+	if err := captured.Err(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled context, got %v", err)
+	}
+}
+
 func TestRegisterMCPServerTransportBuilderError(t *testing.T) {
-	restore := withStubMCPClient(t, func(context.Context, string) (*mcp.ClientSession, error) {
+	restore := withStubMCPClient(t, func(context.Context, string, mcpListChangedHandler) (*mcp.ClientSession, error) {
 		return nil, errors.New("boom")
 	})
 	defer restore()
@@ -483,8 +228,10 @@ func TestRegisterMCPServerSuccessAddsClient(t *testing.T) {
 	if server.Closed() {
 		t.Fatalf("session should remain open after success")
 	}
-	for _, session := range r.mcpSessions {
-		_ = session.Close()
+	for _, info := range r.mcpSessions {
+		if info != nil && info.session != nil {
+			_ = info.session.Close()
+		}
 	}
 }
 
@@ -543,6 +290,105 @@ func TestRegistryCloseClosesSessions(t *testing.T) {
 	}
 }
 
+func TestRegistryRefreshMCPToolsReplacesSnapshot(t *testing.T) {
+	server := &stubMCPServer{tools: []*mcp.Tool{{Name: "echo", Description: "remote", InputSchema: map[string]any{"type": "object"}}}}
+	restore := withStubMCPClient(t, sessionFactory(server))
+	defer restore()
+
+	r := NewRegistry()
+	if err := r.RegisterMCPServer(context.Background(), "fake", ""); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+	if _, err := r.Get("echo"); err != nil {
+		t.Fatalf("expected echo tool: %v", err)
+	}
+
+	server.tools = []*mcp.Tool{{Name: "sum", Description: "remote", InputSchema: map[string]any{"type": "object"}}}
+	if err := r.refreshMCPTools(context.Background(), "fake", ""); err != nil {
+		t.Fatalf("refresh failed: %v", err)
+	}
+	if _, err := r.Get("sum"); err != nil {
+		t.Fatalf("expected sum tool after refresh: %v", err)
+	}
+	if _, err := r.Get("echo"); err == nil {
+		t.Fatalf("expected old tool to be removed")
+	}
+}
+
+func TestRegisterMCPServerWithOptionsSuccess(t *testing.T) {
+	server := &stubMCPServer{tools: []*mcp.Tool{{Name: "echo", Description: "remote", InputSchema: map[string]any{"type": "object"}}}}
+	orig := newMCPClientWithOptions
+	newMCPClientWithOptions = func(context.Context, string, MCPServerOptions, mcpListChangedHandler) (*mcp.ClientSession, error) {
+		return server.newSession()
+	}
+	defer func() { newMCPClientWithOptions = orig }()
+
+	r := NewRegistry()
+	if err := r.RegisterMCPServerWithOptions(context.Background(), "fake", "svc", MCPServerOptions{Headers: map[string]string{"a": "b"}}); err != nil {
+		t.Fatalf("register with options failed: %v", err)
+	}
+	if _, err := r.Get("svc__echo"); err != nil {
+		t.Fatalf("expected namespaced tool: %v", err)
+	}
+	r.Close()
+}
+
+func TestConnectMCPClientWithOptions(t *testing.T) {
+	server := &stubMCPServer{tools: []*mcp.Tool{{Name: "echo", InputSchema: map[string]any{"type": "object"}}}}
+	transport := &stubTransport{server: server}
+
+	restore := withStubMCPTransport(t, func(context.Context, string) (mcp.Transport, error) {
+		return transport, nil
+	})
+	defer restore()
+
+	session, err := connectMCPClientWithOptions(context.Background(), "fake", MCPServerOptions{}, func(context.Context, *mcp.ClientSession) {})
+	if err != nil || session == nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	_ = session.Close()
+}
+
+func TestConnectMCPClientWithOptionsTransportError(t *testing.T) {
+	restore := withStubMCPTransport(t, func(context.Context, string) (mcp.Transport, error) {
+		return nil, errors.New("boom")
+	})
+	defer restore()
+
+	if _, err := connectMCPClientWithOptions(context.Background(), "fake", MCPServerOptions{}, nil); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("expected transport error, got %v", err)
+	}
+}
+
+func TestMCPToolsChangedHandlerRefreshes(t *testing.T) {
+	server := &stubMCPServer{tools: []*mcp.Tool{{Name: "echo", Description: "remote", InputSchema: map[string]any{"type": "object"}}}}
+	restore := withStubMCPClient(t, sessionFactory(server))
+	defer restore()
+
+	r := NewRegistry()
+	if err := r.RegisterMCPServer(context.Background(), "fake", ""); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+	info := r.mcpSessions[0]
+	server.tools = []*mcp.Tool{{Name: "sum", Description: "remote", InputSchema: map[string]any{"type": "object"}}}
+
+	handler := r.mcpToolsChangedHandler("fake")
+	handler(context.Background(), info.session)
+
+	found := false
+	for i := 0; i < 50; i++ {
+		if _, err := r.Get("sum"); err == nil {
+			found = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !found {
+		t.Fatalf("expected tools refresh to register new tool")
+	}
+	r.Close()
+}
+
 func TestRemoteToolExecuteWithNilParams(t *testing.T) {
 	server := &stubMCPServer{tools: []*mcp.Tool{{Name: "remote", InputSchema: map[string]any{"type": "object"}}}}
 	server.callFn = func(_ context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
@@ -595,12 +441,50 @@ func TestRemoteToolExecuteError(t *testing.T) {
 	}
 }
 
-func withStubMCPClient(t *testing.T, fn func(context.Context, string) (*mcp.ClientSession, error)) func() {
+func TestFindMCPSessionLockedVariants(t *testing.T) {
+	server := &stubMCPServer{tools: []*mcp.Tool{{Name: "echo", InputSchema: map[string]any{"type": "object"}}}}
+	session, err := server.newSession()
+	if err != nil {
+		t.Fatalf("new session: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	r := NewRegistry()
+	info := &mcpSessionInfo{
+		serverID:  "srv",
+		sessionID: "",
+		session:   session,
+		toolNames: map[string]struct{}{"echo": {}},
+	}
+	r.mcpSessions = []*mcpSessionInfo{info}
+
+	if got := r.findMCPSessionLocked("srv", ""); got == nil {
+		t.Fatalf("expected match by server id")
+	}
+	info.sessionID = "sess-id"
+	if got := r.findMCPSessionLocked("", "sess-id"); got == nil {
+		t.Fatalf("expected match by session id")
+	}
+	if got := r.findMCPSessionLocked("missing", "missing"); got != nil {
+		t.Fatalf("expected nil match for missing ids")
+	}
+}
+
+func withStubMCPClient(t *testing.T, fn func(context.Context, string, mcpListChangedHandler) (*mcp.ClientSession, error)) func() {
 	t.Helper()
 	original := newMCPClient
 	newMCPClient = fn
 	return func() {
 		newMCPClient = original
+	}
+}
+
+func withStubMCPTransport(t *testing.T, fn func(context.Context, string) (mcp.Transport, error)) func() {
+	t.Helper()
+	original := buildMCPTransport
+	buildMCPTransport = fn
+	return func() {
+		buildMCPTransport = original
 	}
 }
 
@@ -616,8 +500,8 @@ func equalStringSlices(a, b []string) bool {
 	return true
 }
 
-func sessionFactory(server *stubMCPServer) func(context.Context, string) (*mcp.ClientSession, error) {
-	return func(context.Context, string) (*mcp.ClientSession, error) {
+func sessionFactory(server *stubMCPServer) func(context.Context, string, mcpListChangedHandler) (*mcp.ClientSession, error) {
+	return func(context.Context, string, mcpListChangedHandler) (*mcp.ClientSession, error) {
 		return server.newSession()
 	}
 }

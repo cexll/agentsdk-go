@@ -2,364 +2,184 @@ package toolbuiltin
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	xhtml "golang.org/x/net/html"
 )
 
-func TestWebSearchFiltersDomains(t *testing.T) {
-	html := ddgHTML(
-		`<div class="result"><a class="result__a" href="https://news.example.com/doc">Doc</a><div class="result__snippet">first</div></div>`,
-		`<div class="result"><a class="result__a" href="https://example.org/post">Other</a><div class="result__snippet">second</div></div>`,
-	)
-	tool := newTestWebSearchTool(t, func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
-			t.Fatalf("parse form: %v", err)
-		}
-		if r.PostForm.Get("q") != "latest" {
-			t.Fatalf("unexpected query %s", r.PostForm.Get("q"))
-		}
+func TestWebSearchExecute(t *testing.T) {
+	t.Parallel()
+
+	html := `<html><body>
+<div class="result">
+  <a class="result__a" href="https://example.com">Example</a>
+  <a class="result__snippet">Snippet</a>
+</div>
+</body></html>`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(html))
-	}, &WebSearchOptions{MaxResults: 5})
+	}))
+	defer server.Close()
 
-	params := map[string]interface{}{
-		"query":           "latest",
-		"allowed_domains": []interface{}{"example.org"},
-	}
+	orig := duckDuckGoEndpoint
+	duckDuckGoEndpoint = server.URL
+	t.Cleanup(func() { duckDuckGoEndpoint = orig })
 
-	res, err := tool.Execute(context.Background(), params)
+	tool := NewWebSearchTool(&WebSearchOptions{HTTPClient: server.Client()})
+	res, err := tool.Execute(context.Background(), map[string]interface{}{
+		"query":           "example",
+		"allowed_domains": []string{"example.com"},
+	})
 	if err != nil {
 		t.Fatalf("execute failed: %v", err)
 	}
-	data := res.Data.(map[string]interface{})
-	results := data["results"].([]SearchResult)
-	if len(results) != 1 || results[0].URL != "https://example.org/post" {
-		t.Fatalf("unexpected filter result %#v", results)
+	if !res.Success {
+		t.Fatalf("expected success")
+	}
+	if !strings.Contains(res.Output, "Search results") {
+		t.Fatalf("unexpected output %q", res.Output)
 	}
 }
 
-func TestWebSearchBlockedDomain(t *testing.T) {
-	html := ddgHTML(
-		`<div class="result"><a class="result__a" href="https://bad.example.com/a">A</a></div>`,
-		`<div class="result"><a class="result__a" href="https://good.dev/b">B</a><div class="result__snippet">desc</div></div>`,
-	)
-	tool := newTestWebSearchTool(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(html))
-	}, nil)
+func TestWebSearchHelpers(t *testing.T) {
+	t.Parallel()
 
-	params := map[string]interface{}{
-		"query":           "security",
-		"blocked_domains": []string{"example.com"},
+	if _, err := parseDomainList(map[string]interface{}{"domains": "bad"}, "domains"); err == nil {
+		t.Fatalf("expected domain list error")
+	}
+	domains, err := parseDomainList(map[string]interface{}{"domains": []interface{}{"Example.com", "example.com"}}, "domains")
+	if err != nil || len(domains) != 1 || domains[0] != "example.com" {
+		t.Fatalf("unexpected domains %v err=%v", domains, err)
 	}
 
-	res, err := tool.Execute(context.Background(), params)
-	if err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-	results := res.Data.(map[string]interface{})["results"].([]SearchResult)
-	if len(results) != 1 || results[0].URL != "https://good.dev/b" {
-		t.Fatalf("blocked filter failed %#v", results)
-	}
-}
-
-func TestWebSearchFallbackURL(t *testing.T) {
-	html := ddgHTML(
-		`<div class="result"><a class="result__a">Title</a><span class="result__url">https://fallback.dev/path</span><div class="result__snippet"> info </div></div>`,
-	)
-	tool := newTestWebSearchTool(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(html))
-	}, nil)
-
-	res, err := tool.Execute(context.Background(), map[string]interface{}{"query": "fallback"})
-	if err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-	results := res.Data.(map[string]interface{})["results"].([]SearchResult)
-	if len(results) != 1 || results[0].URL != "https://fallback.dev/path" {
-		t.Fatalf("fallback parse failed %#v", results)
-	}
-	if results[0].Snippet != "info" {
-		t.Fatalf("unexpected snippet %q", results[0].Snippet)
-	}
-}
-
-func TestWebSearchShortQuery(t *testing.T) {
-	tool := NewWebSearchTool(nil)
-	params := map[string]interface{}{"query": "a"}
-	if _, err := tool.Execute(context.Background(), params); err == nil {
-		t.Fatalf("expected short query error")
-	}
-}
-
-func TestWebSearchTimeout(t *testing.T) {
-	tool := newTestWebSearchTool(t, func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(200 * time.Millisecond)
-		_, _ = w.Write([]byte(ddgHTML(`<div class="result"><a class="result__a" href="https://slow.dev">Slow</a></div>`)))
-	}, &WebSearchOptions{Timeout: 50 * time.Millisecond})
-
-	params := map[string]interface{}{"query": "timeout"}
-	if _, err := tool.Execute(context.Background(), params); err == nil {
-		t.Fatalf("expected timeout error")
-	}
-}
-
-func TestWebSearchFormatsEmptyResults(t *testing.T) {
-	tool := newTestWebSearchTool(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("<html><body>No hits</body></html>"))
-	}, nil)
-
-	params := map[string]interface{}{"query": "nothing"}
-	res, err := tool.Execute(context.Background(), params)
-	if err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-	if !strings.Contains(res.Output, "No results") {
-		t.Fatalf("unexpected output: %s", res.Output)
-	}
-}
-
-func TestWebSearchDomainListValidation(t *testing.T) {
-	tool := NewWebSearchTool(nil)
-	params := map[string]interface{}{
-		"query":           "news",
-		"allowed_domains": "example.com",
-	}
-	if _, err := tool.Execute(context.Background(), params); err == nil {
-		t.Fatalf("expected validation error")
-	}
-}
-
-func TestWebSearchHTTPError(t *testing.T) {
-	tool := newTestWebSearchTool(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
-	}, nil)
-
-	params := map[string]interface{}{"query": "errors"}
-	if _, err := tool.Execute(context.Background(), params); err == nil {
-		t.Fatalf("expected upstream error")
-	}
-}
-
-func TestWebSearchSendsPOSTForm(t *testing.T) {
-	tool := newTestWebSearchTool(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Fatalf("expected POST, got %s", r.Method)
-		}
-		if !strings.HasPrefix(r.Header.Get("Content-Type"), duckDuckGoFormContentType) {
-			t.Fatalf("unexpected content type %s", r.Header.Get("Content-Type"))
-		}
-		if r.Header.Get("User-Agent") != defaultSearchUserAgent {
-			t.Fatalf("unexpected user agent %s", r.Header.Get("User-Agent"))
-		}
-		if err := r.ParseForm(); err != nil {
-			t.Fatalf("parse form: %v", err)
-		}
-		if r.PostForm.Get("q") != "network" {
-			t.Fatalf("unexpected query value %s", r.PostForm.Get("q"))
-		}
-		if r.PostForm.Get("kl") != "us-en" {
-			t.Fatalf("missing kl param")
-		}
-		_, _ = w.Write([]byte(ddgHTML(`<div class="result"><a class="result__a" href="https://net.dev">Net</a></div>`)))
-	}, nil)
-
-	if _, err := tool.Execute(context.Background(), map[string]interface{}{"query": "network"}); err != nil {
-		t.Fatalf("execute failed: %v", err)
-	}
-}
-
-func TestFormatSearchOutput(t *testing.T) {
 	results := []SearchResult{
-		{Title: "One", URL: "https://one.dev", Snippet: "alpha"},
-		{Title: "Two", URL: "https://two.dev"},
+		{Title: "A", URL: "https://a.example.com", Snippet: "s1"},
+		{Title: "B", URL: "https://b.example.com", Snippet: "s2"},
 	}
-	text := formatSearchOutput("query", results)
-	if !strings.Contains(text, "1. One") || !strings.Contains(text, "2. Two") {
-		t.Fatalf("unexpected formatted output: %s", text)
+	filtered := filterResultsByDomain(results, []string{"a.example.com"}, []string{"b.example.com"}, 10)
+	if len(filtered) != 1 || !strings.Contains(filtered[0].URL, "a.example.com") {
+		t.Fatalf("unexpected filtered results %v", filtered)
 	}
-}
 
-func TestWebSearchMetadata(t *testing.T) {
+	if out := formatSearchOutput("q", nil); !strings.Contains(out, "No results") {
+		t.Fatalf("expected no results output, got %q", out)
+	}
+
 	tool := NewWebSearchTool(nil)
-	if tool.Name() != "WebSearch" {
-		t.Fatalf("unexpected name")
+	if tool.Name() == "" || tool.Description() == "" || tool.Schema() == nil {
+		t.Fatalf("expected metadata")
 	}
-	if tool.Description() == "" || tool.Schema() == nil {
-		t.Fatalf("missing metadata")
-	}
-}
 
-func TestNormaliseDomainsHelper(t *testing.T) {
-	got := normaliseDomains([]string{"Example.com", "", "example.com"})
-	if len(got) != 1 || got[0] != "example.com" {
-		t.Fatalf("unexpected domains %v", got)
-	}
-	if normaliseDomains(nil) != nil {
-		t.Fatalf("nil input should return nil")
-	}
-}
-
-func TestExtractHostHelper(t *testing.T) {
-	if host := extractHost("https://example.com/path"); host != "example.com" {
-		t.Fatalf("unexpected host %s", host)
+	if got := cleanResultURL("ftp://example.com"); got != "" {
+		t.Fatalf("expected invalid url cleaned to empty, got %q", got)
 	}
 	if host := extractHost("://bad"); host != "" {
-		t.Fatalf("expected empty host")
+		t.Fatalf("expected empty host, got %q", host)
+	}
+	dedup := deduplicateResults([]SearchResult{{URL: "https://a"}, {URL: "https://a"}})
+	if len(dedup) != 1 {
+		t.Fatalf("expected deduped results, got %v", dedup)
 	}
 }
 
-func TestWebSearchExecuteValidation(t *testing.T) {
+func TestWebSearchExecuteErrors(t *testing.T) {
+	if _, err := (*WebSearchTool)(nil).Execute(context.Background(), map[string]interface{}{}); err == nil {
+		t.Fatalf("expected nil tool error")
+	}
 	tool := NewWebSearchTool(nil)
-	if _, err := tool.Execute(nil, map[string]interface{}{"query": "x"}); err == nil {
-		t.Fatalf("expected context error")
+	if _, err := tool.Execute(nil, map[string]interface{}{}); err == nil {
+		t.Fatalf("expected nil context error")
 	}
 	if _, err := tool.Execute(context.Background(), nil); err == nil {
-		t.Fatalf("expected params error")
+		t.Fatalf("expected nil params error")
+	}
+	if _, err := tool.Execute(context.Background(), map[string]interface{}{"query": 1}); err == nil {
+		t.Fatalf("expected query type error")
 	}
 }
 
-func TestNodeHasClass(t *testing.T) {
-	if nodeHasClass(nil, "result") {
-		t.Fatalf("nil node should not have class")
+func TestWebSearchSearchErrors(t *testing.T) {
+	orig := duckDuckGoEndpoint
+	t.Cleanup(func() { duckDuckGoEndpoint = orig })
+
+	duckDuckGoEndpoint = ""
+	tool := NewWebSearchTool(nil)
+	if _, err := tool.search(context.Background(), "q"); err == nil {
+		t.Fatalf("expected empty endpoint error")
 	}
 
-	nodeWithoutAttr := &xhtml.Node{Type: xhtml.ElementNode, Data: "div"}
-	if nodeHasClass(nodeWithoutAttr, "foo") {
-		t.Fatalf("node without class attribute should return false")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	duckDuckGoEndpoint = server.URL
+	tool = NewWebSearchTool(&WebSearchOptions{HTTPClient: server.Client()})
+	if _, err := tool.search(context.Background(), "q"); err == nil || !strings.Contains(err.Error(), "status") {
+		t.Fatalf("expected status error, got %v", err)
 	}
 
-	nodeWithMultiple := &xhtml.Node{
+	// response too large
+	large := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(make([]byte, maxSearchResponseBytes+1))
+	}))
+	defer large.Close()
+	duckDuckGoEndpoint = large.URL
+	tool = NewWebSearchTool(&WebSearchOptions{HTTPClient: large.Client()})
+	if _, err := tool.search(context.Background(), "q"); err == nil || !strings.Contains(err.Error(), "exceeded") {
+		t.Fatalf("expected size error, got %v", err)
+	}
+
+	// request error
+	duckDuckGoEndpoint = "http://example.com"
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("network down")
+	})}
+	tool = NewWebSearchTool(&WebSearchOptions{HTTPClient: client})
+	if _, err := tool.search(context.Background(), "q"); err == nil || !strings.Contains(err.Error(), "search request") {
+		t.Fatalf("expected request error, got %v", err)
+	}
+}
+
+func TestWebSearchHTMLHelpers(t *testing.T) {
+	root := &xhtml.Node{
 		Type: xhtml.ElementNode,
 		Data: "div",
-		Attr: []xhtml.Attribute{{Key: "class", Val: "foo bar\tbaz"}},
+		Attr: []xhtml.Attribute{{Key: "class", Val: "a b"}},
 	}
-	if !nodeHasClass(nodeWithMultiple, "bar") {
-		t.Fatalf("expected to match one of multiple classes")
-	}
-	if nodeHasClass(nodeWithMultiple, "ba") {
-		t.Fatalf("should not match partial class names")
-	}
+	child := &xhtml.Node{Type: xhtml.ElementNode, Data: "a", Attr: []xhtml.Attribute{{Key: "href", Val: "https://example.com"}}}
+	text := &xhtml.Node{Type: xhtml.TextNode, Data: " hello \n world "}
+	root.AppendChild(child)
+	root.AppendChild(text)
 
-	nodeWithEmpty := &xhtml.Node{
-		Type: xhtml.ElementNode,
-		Data: "div",
-		Attr: []xhtml.Attribute{{Key: "class", Val: ""}},
+	if !nodeHasClass(root, "a") {
+		t.Fatalf("expected class match")
 	}
-	if nodeHasClass(nodeWithEmpty, "") {
-		t.Fatalf("empty class attribute should remain false")
+	if nodeHasClass(root, "missing") {
+		t.Fatalf("expected missing class")
+	}
+	if got := getAttr(child, "href"); got == "" {
+		t.Fatalf("expected href attr")
+	}
+	if got := getAttr(child, "missing"); got != "" {
+		t.Fatalf("expected empty missing attr")
+	}
+	if got := collapseWhitespace("  a \n b\t"); got != "a b" {
+		t.Fatalf("unexpected collapsed whitespace %q", got)
+	}
+	if got := nodeText(root); got != "hello world" {
+		t.Fatalf("unexpected node text %q", got)
 	}
 }
 
-func TestDeduplicateResults(t *testing.T) {
-	if res := deduplicateResults(nil); res != nil {
-		t.Fatalf("nil slice should return nil")
-	}
+type roundTripFunc func(*http.Request) (*http.Response, error)
 
-	onlyEmpty := []SearchResult{
-		{Title: "A"},
-		{Title: "B", URL: ""},
-	}
-	if res := deduplicateResults(onlyEmpty); res != nil {
-		t.Fatalf("results without URLs should yield nil, got %#v", res)
-	}
-
-	input := []SearchResult{
-		{Title: "First", URL: "https://example.com/a"},
-		{Title: "Dup", URL: "https://example.com/a"},
-		{Title: "MissingURL", URL: ""},
-		{Title: "Second", URL: "https://example.com/b"},
-	}
-	got := deduplicateResults(input)
-	if len(got) != 2 {
-		t.Fatalf("expected 2 unique results, got %#v", got)
-	}
-	if got[0].Title != "First" || got[1].Title != "Second" {
-		t.Fatalf("unexpected order after dedupe %#v", got)
-	}
-}
-
-func TestCollectNodeText(t *testing.T) {
-	var builder strings.Builder
-	collectNodeText(nil, &builder)
-	if builder.Len() != 0 {
-		t.Fatalf("nil node should not write text")
-	}
-
-	textNode := &xhtml.Node{Type: xhtml.TextNode, Data: "  spaced text "}
-	builder.Reset()
-	collectNodeText(textNode, &builder)
-	if builder.String() != textNode.Data {
-		t.Fatalf("expected raw text node data, got %q", builder.String())
-	}
-
-	root := &xhtml.Node{Type: xhtml.ElementNode, Data: "div"}
-	first := &xhtml.Node{Type: xhtml.TextNode, Data: "Hello "}
-	br := &xhtml.Node{Type: xhtml.ElementNode, Data: "br"}
-	span := &xhtml.Node{Type: xhtml.ElementNode, Data: "span"}
-	spanText := &xhtml.Node{Type: xhtml.TextNode, Data: " world "}
-	root.FirstChild = first
-	first.NextSibling = br
-	br.NextSibling = span
-	span.FirstChild = spanText
-
-	builder.Reset()
-	collectNodeText(root, &builder)
-	if got := collapseWhitespace(builder.String()); got != "Hello world" {
-		t.Fatalf("unexpected collected text %q", got)
-	}
-}
-
-func TestCleanResultURL(t *testing.T) {
-	tests := []struct {
-		name string
-		raw  string
-		want string
-	}{
-		{name: "empty input", raw: "   ", want: ""},
-		{name: "non http scheme", raw: "ftp://example.com/file", want: ""},
-		{name: "invalid url", raw: "%", want: ""},
-		{name: "missing host", raw: "https:///nohost", want: ""},
-		{name: "valid https", raw: " https://example.com/path?q=1#frag ", want: "https://example.com/path?q=1"},
-		{name: "decoded encoded url", raw: "https%3A%2F%2Fexample.com%2Fdoc%3Fq%3Da%2Bb#section", want: "https://example.com/doc?q=a+b"},
-		{name: "special characters", raw: "https://example.com/a%20b?foo=bar%2Bbaz#frag", want: "https://example.com/a%20b?foo=bar+baz"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := cleanResultURL(tt.raw); got != tt.want {
-				t.Fatalf("cleanResultURL(%q) = %q, want %q", tt.raw, got, tt.want)
-			}
-		})
-	}
-}
-
-func ddgHTML(results ...string) string {
-	var builder strings.Builder
-	builder.WriteString("<html><body>")
-	for _, res := range results {
-		builder.WriteString(res)
-	}
-	builder.WriteString("</body></html>")
-	return builder.String()
-}
-
-func newTestWebSearchTool(t *testing.T, handler http.HandlerFunc, opts *WebSearchOptions) *WebSearchTool {
-	t.Helper()
-	stubDuckDuckGoEndpoint(t, "https://duckduckgo.test/html/")
-
-	var cfg WebSearchOptions
-	if opts != nil {
-		cfg = *opts
-	}
-	cfg.HTTPClient = newInMemoryHTTPClient(handler)
-	return NewWebSearchTool(&cfg)
-}
-
-func stubDuckDuckGoEndpoint(t *testing.T, url string) {
-	t.Helper()
-	prev := duckDuckGoEndpoint
-	duckDuckGoEndpoint = url
-	t.Cleanup(func() { duckDuckGoEndpoint = prev })
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
 }

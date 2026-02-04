@@ -11,14 +11,14 @@ import (
 )
 
 //go:linkname patchedNewMCPClient github.com/cexll/agentsdk-go/pkg/tool.newMCPClient
-var patchedNewMCPClient func(ctx context.Context, spec string) (*mcp.ClientSession, error)
+var patchedNewMCPClient func(ctx context.Context, spec string, handler func(context.Context, *mcp.ClientSession)) (*mcp.ClientSession, error)
 
 type mcpCallCounter struct {
 	calls int
 	err   error
 }
 
-func (c *mcpCallCounter) dial(ctx context.Context, spec string) (*mcp.ClientSession, error) {
+func (c *mcpCallCounter) dial(ctx context.Context, spec string, _ func(context.Context, *mcp.ClientSession)) (*mcp.ClientSession, error) {
 	c.calls++
 	return nil, c.err
 }

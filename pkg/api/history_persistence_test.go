@@ -1,116 +1,198 @@
 package api
 
 import (
-	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/cexll/agentsdk-go/pkg/model"
+	"github.com/cexll/agentsdk-go/pkg/message"
 )
 
-func TestRuntime_PersistsAndLoadsHistory(t *testing.T) {
-	dir := t.TempDir()
-	sessionID := "sess-1"
-
-	rt1, err := New(context.Background(), Options{
-		ProjectRoot: dir,
-		Model: &stubModel{responses: []*model.Response{
-			{Message: model.Message{Role: "assistant", Content: "ok"}},
-		}},
-	})
-	if err != nil {
-		t.Fatalf("new runtime: %v", err)
-	}
-	t.Cleanup(func() { _ = rt1.Close() })
-
-	if _, err := rt1.Run(context.Background(), Request{Prompt: "hello", SessionID: sessionID}); err != nil {
-		t.Fatalf("run 1: %v", err)
-	}
-
-	p := newDiskHistoryPersister(dir)
+func TestDiskHistoryPersisterSaveLoadAndCleanup(t *testing.T) {
+	root := t.TempDir()
+	p := newDiskHistoryPersister(root)
 	if p == nil {
-		t.Fatal("expected disk history persister")
-	}
-	msgs, err := p.Load(sessionID)
-	if err != nil {
-		t.Fatalf("load persisted history: %v", err)
-	}
-	if len(msgs) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(msgs))
-	}
-	if msgs[0].Role != "user" || msgs[0].Content != "hello" {
-		t.Fatalf("unexpected first message: %+v", msgs[0])
-	}
-	if msgs[1].Role != "assistant" || msgs[1].Content != "ok" {
-		t.Fatalf("unexpected second message: %+v", msgs[1])
+		t.Fatalf("expected persister")
 	}
 
-	mdl2 := &stubModel{responses: []*model.Response{
-		{Message: model.Message{Role: "assistant", Content: "ok2"}},
-	}}
-	rt2, err := New(context.Background(), Options{ProjectRoot: dir, Model: mdl2})
-	if err != nil {
-		t.Fatalf("new runtime 2: %v", err)
+	msgs := []message.Message{{Role: "user", Content: "hi"}}
+	if err := p.Save("sess", msgs); err != nil {
+		t.Fatalf("save: %v", err)
 	}
-	t.Cleanup(func() { _ = rt2.Close() })
-
-	if _, err := rt2.Run(context.Background(), Request{Prompt: "again", SessionID: sessionID}); err != nil {
-		t.Fatalf("run 2: %v", err)
+	loaded, err := p.Load("sess")
+	if err != nil || len(loaded) != 1 || loaded[0].Content != "hi" {
+		t.Fatalf("load mismatch %v err=%v", loaded, err)
 	}
 
-	if len(mdl2.requests) == 0 {
-		t.Fatal("expected model request in second run")
+	legacy := []message.Message{{Role: "assistant", Content: "ok"}}
+	data, _ := json.Marshal(legacy)
+	legacyPath := p.filePath("legacy")
+	if err := os.WriteFile(legacyPath, data, 0o600); err != nil {
+		t.Fatalf("write legacy: %v", err)
 	}
-	gotReq := mdl2.requests[0]
-	if len(gotReq.Messages) != 3 {
-		t.Fatalf("expected 3 messages in request, got %d", len(gotReq.Messages))
-	}
-	if gotReq.Messages[0].Role != "user" || gotReq.Messages[0].Content != "hello" {
-		t.Fatalf("unexpected request[0]: %+v", gotReq.Messages[0])
-	}
-	if gotReq.Messages[1].Role != "assistant" || gotReq.Messages[1].Content != "ok" {
-		t.Fatalf("unexpected request[1]: %+v", gotReq.Messages[1])
-	}
-	if gotReq.Messages[2].Role != "user" || gotReq.Messages[2].Content != "again" {
-		t.Fatalf("unexpected request[2]: %+v", gotReq.Messages[2])
+	loadedLegacy, err := p.Load("legacy")
+	if err != nil || len(loadedLegacy) != 1 || loadedLegacy[0].Content != "ok" {
+		t.Fatalf("legacy load mismatch %v err=%v", loadedLegacy, err)
 	}
 
-	msgs2, err := p.Load(sessionID)
-	if err != nil {
-		t.Fatalf("load persisted history after run 2: %v", err)
+	oldPath := p.filePath("old")
+	if err := os.WriteFile(oldPath, data, 0o600); err != nil {
+		t.Fatalf("write old: %v", err)
 	}
-	if len(msgs2) != 4 {
-		t.Fatalf("expected 4 messages after second run, got %d", len(msgs2))
+	oldTime := time.Now().AddDate(0, 0, -2)
+	if err := os.Chtimes(oldPath, oldTime, oldTime); err != nil {
+		t.Fatalf("chtime: %v", err)
 	}
-}
-
-func TestDiskHistoryPersister_CleanupRemovesOldFiles(t *testing.T) {
-	dir := t.TempDir()
-	p := newDiskHistoryPersister(dir)
-	if p == nil {
-		t.Fatal("expected disk history persister")
-	}
-	if err := os.MkdirAll(p.dir, 0o700); err != nil {
-		t.Fatalf("mkdir history dir: %v", err)
-	}
-	path := p.filePath("old-session")
-	if path == "" {
-		t.Fatal("expected history file path")
-	}
-	if err := os.WriteFile(path, []byte(`{"version":1,"messages":[{"Role":"user","Content":"x"}]}`), 0o600); err != nil {
-		t.Fatalf("write history: %v", err)
-	}
-	old := time.Now().Add(-48 * time.Hour)
-	if err := os.Chtimes(path, old, old); err != nil {
-		t.Fatalf("chtimes: %v", err)
-	}
-
 	if err := p.Cleanup(1); err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if _, err := os.Stat(path); err == nil || !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected old history file removed, stat err=%v", err)
+	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected old file removed, got %v", err)
+	}
+}
+
+func TestPersistHistoryWritesSnapshot(t *testing.T) {
+	root := t.TempDir()
+	p := newDiskHistoryPersister(root)
+	if p == nil {
+		t.Fatalf("expected persister")
+	}
+	rt := &Runtime{historyPersister: p}
+	h := message.NewHistory()
+	h.Append(message.Message{Role: "user", Content: "hello"})
+
+	rt.persistHistory("sess", h)
+	if _, err := os.Stat(filepath.Join(root, ".claude", "history", "sess.json")); err != nil {
+		t.Fatalf("expected history file, got %v", err)
+	}
+}
+
+func TestDiskHistoryPersisterFilePathAndLoadErrors(t *testing.T) {
+	var nilPersister *diskHistoryPersister
+	if got := nilPersister.filePath("sess"); got != "" {
+		t.Fatalf("expected empty path for nil persister, got %q", got)
+	}
+
+	p := &diskHistoryPersister{dir: ""}
+	if got := p.filePath("sess"); got != "" {
+		t.Fatalf("expected empty path for blank dir, got %q", got)
+	}
+	p = &diskHistoryPersister{dir: t.TempDir()}
+	if got := p.filePath("   "); !strings.HasSuffix(got, "default.json") {
+		t.Fatalf("expected default path for blank session, got %q", got)
+	}
+
+	badPath := filepath.Join(p.dir, "bad.json")
+	if err := os.MkdirAll(p.dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(badPath, []byte("{not-json"), 0o600); err != nil {
+		t.Fatalf("write bad json: %v", err)
+	}
+	if _, err := p.Load("bad"); err == nil {
+		t.Fatalf("expected decode error")
+	}
+}
+
+func TestDiskHistoryPersisterSaveAndCleanupErrors(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "file")
+	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	p := &diskHistoryPersister{dir: filePath}
+	if err := p.Save("sess", []message.Message{{Role: "user", Content: "hi"}}); err == nil {
+		t.Fatalf("expected save error for file dir")
+	}
+
+	if err := p.Cleanup(-1); err != nil {
+		t.Fatalf("expected no error on negative retain days")
+	}
+	if err := p.Cleanup(1); err == nil {
+		t.Fatalf("expected cleanup error for file dir")
+	}
+}
+
+func TestDiskHistoryPersisterSaveRenameFallback(t *testing.T) {
+	root := t.TempDir()
+	p := newDiskHistoryPersister(root)
+	if p == nil {
+		t.Fatalf("expected persister")
+	}
+	dest := p.filePath("sess")
+	if err := os.MkdirAll(dest, 0o700); err != nil {
+		t.Fatalf("mkdir dest dir: %v", err)
+	}
+	if err := p.Save("sess", []message.Message{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatalf("stat dest: %v", err)
+	}
+	if info.IsDir() {
+		t.Fatalf("expected dest to be file after save")
+	}
+}
+
+func TestPersistHistorySkipsEmptyCases(t *testing.T) {
+	var rt *Runtime
+	rt.persistHistory("sess", message.NewHistory())
+
+	rt = &Runtime{historyPersister: newDiskHistoryPersister(t.TempDir())}
+	rt.persistHistory(" ", message.NewHistory())
+	h := message.NewHistory()
+	rt.persistHistory("sess", h)
+}
+
+func TestDiskHistoryPersisterSaveMarshalError(t *testing.T) {
+	root := t.TempDir()
+	p := newDiskHistoryPersister(root)
+	if p == nil {
+		t.Fatalf("expected persister")
+	}
+	msgs := []message.Message{{
+		Role: "user",
+		ToolCalls: []message.ToolCall{{
+			ID:        "1",
+			Name:      "tool",
+			Arguments: map[string]any{"bad": func() {}},
+		}},
+	}}
+	if err := p.Save("sess", msgs); err == nil {
+		t.Fatalf("expected marshal error")
+	}
+}
+
+func TestDiskHistoryPersisterSaveCreateTempError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod permissions behave differently on windows")
+	}
+	root := t.TempDir()
+	p := newDiskHistoryPersister(root)
+	if p == nil {
+		t.Fatalf("expected persister")
+	}
+	if err := os.MkdirAll(p.dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(p.dir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(p.dir, 0o700) })
+
+	if err := p.Save("sess", []message.Message{{Role: "user", Content: "hi"}}); err == nil {
+		t.Fatalf("expected create temp error")
+	}
+}
+
+func TestNewDiskHistoryPersisterEmptyRoot(t *testing.T) {
+	if p := newDiskHistoryPersister(" "); p != nil {
+		t.Fatalf("expected nil persister for empty root")
 	}
 }

@@ -63,7 +63,6 @@ func TestSettingsLoader_SingleLayer(t *testing.T) {
 					AutoAllowBashIfSandboxed: boolPtr(false),
 					Network:                  &SandboxNetworkConfig{AllowUnixSockets: []string{"/tmp/test.sock"}},
 				},
-				EnabledPlugins: map[string]bool{"git@oss": true},
 			}
 
 			writeSettingsFile(t, tc.targetLayer(projectPath, localPath), cfg)
@@ -79,7 +78,6 @@ func TestSettingsLoader_SingleLayer(t *testing.T) {
 			require.Equal(t, []string{"Bash(ls:*)"}, got.Permissions.Allow)
 			require.Equal(t, "acceptEdits", got.Permissions.DefaultMode)
 			require.Equal(t, []string{"/tmp/test.sock"}, got.Sandbox.Network.AllowUnixSockets)
-			require.Equal(t, map[string]bool{"git@oss": true}, got.EnabledPlugins)
 			require.True(t, *got.IncludeCoAuthoredBy)               // default preserved
 			require.False(t, *got.Sandbox.AutoAllowBashIfSandboxed) // overridden bool respected
 		})
@@ -102,10 +100,6 @@ func TestSettingsLoader_MultiLayerMerge(t *testing.T) {
 				AllowUnixSockets: []string{"/var/run/docker.sock"},
 			},
 		},
-		EnabledPlugins: map[string]bool{"alpha@core": false, "beta@core": true},
-		ExtraKnownMarketplaces: map[string]MarketplaceSource{
-			"oss": {Source: "directory", Path: "/opt/oss"},
-		},
 	}
 	localCfg := Settings{
 		Model: "local-model",
@@ -117,7 +111,6 @@ func TestSettingsLoader_MultiLayerMerge(t *testing.T) {
 		Sandbox: &SandboxConfig{
 			AutoAllowBashIfSandboxed: boolPtr(false),
 		},
-		EnabledPlugins: map[string]bool{"beta@core": false, "local@oss": true},
 	}
 	runtimeCfg := &Settings{
 		Model: "runtime-model",
@@ -125,7 +118,6 @@ func TestSettingsLoader_MultiLayerMerge(t *testing.T) {
 		Sandbox: &SandboxConfig{
 			Enabled: boolPtr(false),
 		},
-		EnabledPlugins: map[string]bool{"runtime@oss": true},
 	}
 	t.Run("project plus local", func(t *testing.T) {
 		t.Parallel()
@@ -140,7 +132,6 @@ func TestSettingsLoader_MultiLayerMerge(t *testing.T) {
 		require.Equal(t, []string{"Bash(home:*)", "Bash(proj:*)"}, got.Permissions.Allow)
 		require.Equal(t, []string{"Delete(*)"}, got.Permissions.Deny)
 		require.False(t, *got.Sandbox.AutoAllowBashIfSandboxed)
-		require.Equal(t, map[string]bool{"alpha@core": false, "beta@core": false, "local@oss": true}, got.EnabledPlugins)
 	})
 
 	t.Run("project plus runtime overrides", func(t *testing.T) {
@@ -153,11 +144,6 @@ func TestSettingsLoader_MultiLayerMerge(t *testing.T) {
 		require.Equal(t, "runtime-model", got.Model)
 		require.Equal(t, map[string]string{"A": "2", "B": "p", "C": "runtime"}, got.Env)
 		require.True(t, got.Sandbox != nil && !*got.Sandbox.Enabled)
-		require.Equal(t, map[string]bool{
-			"alpha@core":  false,
-			"beta@core":   true,
-			"runtime@oss": true,
-		}, got.EnabledPlugins)
 	})
 
 }
@@ -220,10 +206,6 @@ func TestSettingsLoader_FieldMerging(t *testing.T) {
 				HTTPProxyPort:    intPtr(8080),
 			},
 		},
-		EnabledPlugins: map[string]bool{"p@core": true, "q@core": true},
-		ExtraKnownMarketplaces: map[string]MarketplaceSource{
-			"internal": {Source: "directory", Path: "/src/internal"},
-		},
 	}
 	local := Settings{
 		Model: "local",
@@ -241,10 +223,6 @@ func TestSettingsLoader_FieldMerging(t *testing.T) {
 				AllowUnixSockets: []string{"/run/local.sock"},
 				SocksProxyPort:   intPtr(1080),
 			},
-		},
-		EnabledPlugins: map[string]bool{"p@core": false},
-		ExtraKnownMarketplaces: map[string]MarketplaceSource{
-			"oss": {Source: "directory", Path: "/override/oss"},
 		},
 	}
 
@@ -265,11 +243,6 @@ func TestSettingsLoader_FieldMerging(t *testing.T) {
 	require.Equal(t, []string{"/run/docker.sock", "/run/local.sock"}, got.Sandbox.Network.AllowUnixSockets)
 	require.Equal(t, 8080, *got.Sandbox.Network.HTTPProxyPort)
 	require.Equal(t, 1080, *got.Sandbox.Network.SocksProxyPort)
-	require.Equal(t, map[string]bool{"p@core": false, "q@core": true}, got.EnabledPlugins)
-	require.Equal(t, map[string]MarketplaceSource{
-		"internal": {Source: "directory", Path: "/src/internal"},
-		"oss":      {Source: "directory", Path: "/override/oss"},
-	}, got.ExtraKnownMarketplaces)
 }
 
 func TestSettingsLoader_ToolOutputConfigMerge(t *testing.T) {

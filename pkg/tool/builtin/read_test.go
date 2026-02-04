@@ -147,6 +147,21 @@ func TestReadToolValidationErrors(t *testing.T) {
 	}
 }
 
+func TestReadToolRejectsBinaryFiles(t *testing.T) {
+	skipIfWindows(t)
+	dir := cleanTempDir(t)
+	path := filepath.Join(dir, "binary.bin")
+	if err := os.WriteFile(path, []byte{0x00, 0x01, 0x02}, 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	tool := NewReadToolWithRoot(dir)
+
+	_, err := tool.Execute(context.Background(), map[string]any{"file_path": path})
+	if err == nil || !strings.Contains(err.Error(), "binary file") {
+		t.Fatalf("expected binary file error, got %v", err)
+	}
+}
+
 func TestReadToolMetadataAndHelpers(t *testing.T) {
 	tool := NewReadTool()
 	if tool.Name() != "Read" {

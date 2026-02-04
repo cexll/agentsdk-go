@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,6 +32,50 @@ printf '{"tool_input":{"name":"Echo","params":{"k":"v2"}}}'
 	}
 	if params["k"] != "v2" {
 		t.Fatalf("expected modified param, got %+v", params)
+	}
+}
+
+func TestPreToolUseDeniesExecution(t *testing.T) {
+	t.Parallel()
+
+	exec := corehooks.NewExecutor()
+	exec.Register(corehooks.ShellHook{
+		Event:   coreevents.PreToolUse,
+		Command: "exit 1",
+	})
+	adapter := &runtimeHookAdapter{executor: exec}
+
+	_, err := adapter.PreToolUse(context.Background(), coreevents.ToolUsePayload{
+		Name:   "Echo",
+		Params: map[string]any{"k": "v"},
+	})
+	if err == nil {
+		t.Fatalf("expected deny error")
+	}
+	if !errors.Is(err, ErrToolUseDenied) {
+		t.Fatalf("expected ErrToolUseDenied, got %v", err)
+	}
+}
+
+func TestPreToolUseAsksForApproval(t *testing.T) {
+	t.Parallel()
+
+	exec := corehooks.NewExecutor()
+	exec.Register(corehooks.ShellHook{
+		Event:   coreevents.PreToolUse,
+		Command: "exit 2",
+	})
+	adapter := &runtimeHookAdapter{executor: exec}
+
+	_, err := adapter.PreToolUse(context.Background(), coreevents.ToolUsePayload{
+		Name:   "Echo",
+		Params: map[string]any{"k": "v"},
+	})
+	if err == nil {
+		t.Fatalf("expected ask error")
+	}
+	if !errors.Is(err, ErrToolUseRequiresApproval) {
+		t.Fatalf("expected ErrToolUseRequiresApproval, got %v", err)
 	}
 }
 

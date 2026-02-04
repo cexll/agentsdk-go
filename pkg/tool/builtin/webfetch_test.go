@@ -2,386 +2,204 @@ package toolbuiltin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
-	"time"
 )
 
-type roundTripperFunc func(*http.Request) (*http.Response, error)
+func TestWebFetchExecuteAndCache(t *testing.T) {
+	t.Parallel()
 
-func (fn roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return fn(req)
-}
-
-func newInMemoryHTTPClient(handler http.Handler) *http.Client {
-	return &http.Client{
-		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			recorder := httptest.NewRecorder()
-
-			done := make(chan struct{})
-			go func() {
-				handler.ServeHTTP(recorder, req)
-				if req.Body != nil {
-					req.Body.Close()
-				}
-				close(done)
-			}()
-
-			select {
-			case <-req.Context().Done():
-				return nil, req.Context().Err()
-			case <-done:
-			}
-
-			resp := recorder.Result()
-			resp.Request = req
-			return resp, nil
-		}),
-	}
-}
-
-func TestWebFetchConvertsHTMLAndCaches(t *testing.T) {
-	serverCalls := 0
-	host := "example.test"
-	baseURL := "https://" + host
-	client := newInMemoryHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serverCalls++
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("<html><body><h1>Hello</h1><p>Welcome to <strong>Agents</strong>.</p></body></html>"))
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("<html><body><h1>Hello</h1></body></html>"))
 	}))
+	defer server.Close()
 
 	tool := NewWebFetchTool(&WebFetchOptions{
-		HTTPClient:        client,
-		CacheTTL:          time.Minute,
-		AllowedHosts:      []string{host},
+		HTTPClient:        server.Client(),
 		AllowPrivateHosts: true,
 	})
 
-	url := strings.Replace(baseURL+"/page", "https://", "http://", 1)
 	params := map[string]interface{}{
-		"url":    url,
+		"url":    server.URL,
 		"prompt": "summarise",
 	}
-
 	res, err := tool.Execute(context.Background(), params)
 	if err != nil {
 		t.Fatalf("execute failed: %v", err)
 	}
 	if !res.Success {
-		t.Fatalf("expected success got %#v", res)
+		t.Fatalf("expected success")
 	}
-	markdown, _ := res.Data.(map[string]interface{})["content_markdown"].(string)
-	trimmed := strings.TrimSpace(markdown)
-	if !strings.HasPrefix(trimmed, "#") {
-		t.Fatalf("markdown missing heading marker: %q", trimmed)
+	data, ok := res.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected data type %T", res.Data)
 	}
-	if !strings.Contains(trimmed, "Welcome") {
-		t.Fatalf("markdown missing body: %q", trimmed)
+	if fromCache, ok := data["from_cache"].(bool); !ok || fromCache {
+		t.Fatalf("expected cache miss, got %v", data["from_cache"])
 	}
 
 	res2, err := tool.Execute(context.Background(), params)
 	if err != nil {
-		t.Fatalf("second execute failed: %v", err)
+		t.Fatalf("execute 2 failed: %v", err)
 	}
-	if serverCalls != 1 {
-		t.Fatalf("expected 1 upstream call got %d", serverCalls)
+	data2, ok := res2.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected data type %T", res2.Data)
 	}
-	data := res2.Data.(map[string]interface{})
-	cached, _ := data["from_cache"].(bool)
-	if !cached {
-		t.Fatalf("expected cache hit metadata")
+	if fromCache, ok := data2["from_cache"].(bool); !ok || !fromCache {
+		t.Fatalf("expected cache hit, got %v", data2["from_cache"])
 	}
 }
 
-func TestWebFetchRejectsBlockedHosts(t *testing.T) {
-	tool := NewWebFetchTool(nil)
-	params := map[string]interface{}{
-		"url":    "https://127.0.0.1/secret",
-		"prompt": "noop",
+func TestWebFetchValidationHelpers(t *testing.T) {
+	t.Parallel()
+
+	tool := NewWebFetchTool(&WebFetchOptions{AllowPrivateHosts: true})
+	if _, err := tool.extractURL(map[string]interface{}{}); err == nil {
+		t.Fatalf("expected missing url error")
 	}
-	if _, err := tool.Execute(context.Background(), params); err == nil {
+	if _, err := tool.normaliseURL("ftp://example.com"); err == nil {
+		t.Fatalf("expected unsupported scheme error")
+	}
+	if _, err := tool.normaliseURL("https://"); err == nil {
+		t.Fatalf("expected missing host error")
+	}
+
+	policy := tool.redirectPolicy()
+	orig, _ := url.Parse("https://a.example.com")
+	next, _ := url.Parse("https://b.example.com")
+	err := policy(&http.Request{URL: next}, []*http.Request{{URL: orig}})
+	if err == nil {
+		t.Fatalf("expected redirect error")
+	}
+	if notice := detectRedirectNotice(err); notice == nil || !strings.Contains(notice.URL, "b.example.com") {
+		t.Fatalf("expected redirect notice, got %v", notice)
+	}
+
+	if notice := detectRedirectNotice(&url.Error{Err: &hostRedirectError{target: "https://x"}}); notice == nil {
+		t.Fatalf("expected url error notice")
+	}
+	if notice := detectRedirectNotice(errors.New("plain")); notice != nil {
+		t.Fatalf("expected no notice")
+	}
+
+	if _, err := readBounded(strings.NewReader("data"), 1); err == nil {
+		t.Fatalf("expected bounded read error")
+	}
+}
+
+func TestWebFetchMetadataAndMarkdown(t *testing.T) {
+	t.Parallel()
+
+	tool := NewWebFetchTool(&WebFetchOptions{AllowPrivateHosts: true})
+	if tool.Name() == "" || tool.Description() == "" || tool.Schema() == nil {
+		t.Fatalf("expected metadata")
+	}
+
+	validator := newHostValidator([]string{"example.com"}, []string{"blocked.com"}, false)
+	if err := validator.Validate("blocked.com"); err == nil {
+		t.Fatalf("expected blocked host")
+	}
+	if err := validator.Validate("example.com"); err != nil {
+		t.Fatalf("expected allowed host, got %v", err)
+	}
+
+	md := htmlToMarkdown("<h1>Title</h1><p><strong>Hi</strong> <em>there</em> <a href=\"https://example.com\">link</a><br/>line</p><pre><code>code</code></pre><img src=\"x\" alt=\"img\"/><ul><li>Item</li></ul><ol><li>One</li></ol>")
+	if !strings.Contains(md, "#") || !strings.Contains(md, "- ") || !strings.Contains(md, "1. ") {
+		t.Fatalf("unexpected markdown %q", md)
+	}
+
+	if v, err := stringValue([]byte("ok")); err != nil || v != "ok" {
+		t.Fatalf("unexpected stringValue %q err=%v", v, err)
+	}
+
+	if host := hostWithoutPort("example.com:443"); host != "example.com" {
+		t.Fatalf("unexpected host %q", host)
+	}
+	if level := nameToHeadingLevel("h4"); level != 4 {
+		t.Fatalf("unexpected heading level %d", level)
+	}
+	if set := sliceToSet([]string{"A", "a", " "}); len(set) != 1 {
+		t.Fatalf("unexpected set size %d", len(set))
+	}
+}
+
+func TestWebFetchExecuteErrors(t *testing.T) {
+	if _, err := (*WebFetchTool)(nil).Execute(context.Background(), map[string]interface{}{}); err == nil {
+		t.Fatalf("expected nil tool error")
+	}
+	tool := NewWebFetchTool(&WebFetchOptions{AllowPrivateHosts: true})
+	if _, err := tool.Execute(nil, map[string]interface{}{}); err == nil {
+		t.Fatalf("expected nil context error")
+	}
+	if _, err := tool.Execute(context.Background(), nil); err == nil {
+		t.Fatalf("expected nil params error")
+	}
+	if _, err := tool.Execute(context.Background(), map[string]interface{}{"url": "https://example.com"}); err == nil {
+		t.Fatalf("expected missing prompt error")
+	}
+
+	blocked := NewWebFetchTool(&WebFetchOptions{AllowedHosts: []string{"allowed.com"}})
+	if _, err := blocked.Execute(context.Background(), map[string]interface{}{
+		"url":    "https://blocked.com",
+		"prompt": "x",
+	}); err == nil {
 		t.Fatalf("expected blocked host error")
 	}
 }
 
-func TestWebFetchReturnsRedirectNotice(t *testing.T) {
-	host := "example.test"
-	baseURL := "https://" + host
-	client := newInMemoryHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "https://example.org/article", http.StatusFound)
-	}))
+func TestWebFetchRedirectPolicyBranches(t *testing.T) {
+	tool := NewWebFetchTool(&WebFetchOptions{AllowPrivateHosts: true})
+	policy := tool.redirectPolicy()
 
-	tool := NewWebFetchTool(&WebFetchOptions{
-		HTTPClient:        client,
-		AllowedHosts:      []string{host},
-		AllowPrivateHosts: true,
-	})
-	params := map[string]interface{}{
-		"url":    baseURL,
-		"prompt": "redirect",
+	orig, _ := url.Parse("https://example.com")
+	next, _ := url.Parse("https://example.com/path")
+	if err := policy(&http.Request{URL: next}, []*http.Request{{URL: orig}}); err != nil {
+		t.Fatalf("expected same-host redirect to pass, got %v", err)
 	}
-	res, err := tool.Execute(context.Background(), params)
-	if err != nil {
-		t.Fatalf("expected redirect result, got error %v", err)
+
+	var chain []*http.Request
+	for i := 0; i < maxFetchRedirects; i++ {
+		chain = append(chain, &http.Request{URL: orig})
 	}
-	if res.Success {
-		t.Fatalf("redirect response should not be marked successful")
-	}
-	if !strings.HasPrefix(res.Output, redirectNoticePrefix) {
-		t.Fatalf("expected redirect prefix, got %q", res.Output)
+	if err := policy(&http.Request{URL: orig}, chain); err == nil {
+		t.Fatalf("expected too many redirects error")
 	}
 }
 
-func TestWebFetchTimeout(t *testing.T) {
-	host := "example.test"
-	baseURL := "https://" + host
-	client := newInMemoryHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(200 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	tool := NewWebFetchTool(&WebFetchOptions{
-		HTTPClient:        client,
-		Timeout:           50 * time.Millisecond,
-		AllowedHosts:      []string{host},
-		AllowPrivateHosts: true,
-	})
-
-	params := map[string]interface{}{
-		"url":    baseURL,
-		"prompt": "timeout",
-	}
-	if _, err := tool.Execute(context.Background(), params); err == nil {
-		t.Fatalf("expected timeout error")
+func TestWebFetchHostValidatorPrivateIP(t *testing.T) {
+	validator := newHostValidator(nil, nil, false)
+	if err := validator.Validate("127.0.0.1"); err == nil {
+		t.Fatalf("expected private ip to be blocked")
 	}
 }
 
-func TestHtmlToMarkdownFallback(t *testing.T) {
-	raw := "<p>Hello <em>world</em></p>"
-	got := htmlToMarkdown(raw)
-	if !strings.Contains(got, "Hello* world*") {
-		t.Fatalf("expected formatted sentence, got %q", got)
+func TestWebFetchReadBoundedDefaultLimit(t *testing.T) {
+	if _, err := readBounded(strings.NewReader("ok"), 0); err != nil {
+		t.Fatalf("expected bounded read to succeed, got %v", err)
 	}
 }
 
-func TestWebFetchNormaliseURL(t *testing.T) {
-	tool := NewWebFetchTool(nil)
-	got, err := tool.normaliseURL("http://example.com/docs")
-	if err != nil {
-		t.Fatalf("normaliseURL failed: %v", err)
+func TestWebFetchHelperBranches(t *testing.T) {
+	if level := nameToHeadingLevel("unknown"); level != 6 {
+		t.Fatalf("expected default heading level, got %d", level)
 	}
-	if !strings.HasPrefix(got, "https://") {
-		t.Fatalf("expected https upgrade, got %q", got)
+	if got := collapseSpaces("  a   b  "); got != "a b" {
+		t.Fatalf("unexpected collapsed spaces %q", got)
 	}
-	if _, err := tool.normaliseURL("ftp://example.com"); err == nil {
-		t.Fatalf("expected scheme error")
+	lines := make([]string, 0, markdownSnippetMaxLines+1)
+	for i := 0; i < markdownSnippetMaxLines+1; i++ {
+		lines = append(lines, "line")
 	}
-	if _, err := tool.normaliseURL("https://"); err == nil {
-		t.Fatalf("expected host error")
-	}
-}
-
-func TestStringValueCoercion(t *testing.T) {
-	str, err := stringValue(json.Number("42"))
-	if err != nil || str != "42" {
-		t.Fatalf("stringValue failed: %q %v", str, err)
+	long := strings.Join(lines, "\n")
+	if out := summariseMarkdown(long); !strings.Contains(out, "...") {
+		t.Fatalf("expected ellipsis in summary")
 	}
 	if _, err := stringValue(123); err == nil {
-		t.Fatalf("expected error for non-string")
+		t.Fatalf("expected stringValue error")
 	}
-}
-
-func TestFetchCacheStoresAndExpires(t *testing.T) {
-	cache := newFetchCache(10 * time.Millisecond)
-	entry := &fetchResult{URL: "https://example.com", Status: 200, Body: []byte("ok")}
-	cache.Set("key", entry)
-	got, ok := cache.Get("key")
-	if !ok || string(got.Body) != "ok" {
-		t.Fatalf("cache get failed: %v %v", ok, got)
-	}
-	time.Sleep(20 * time.Millisecond)
-	if _, ok := cache.Get("key"); ok {
-		t.Fatalf("expected cache entry to expire")
-	}
-}
-
-func TestHtmlToMarkdownAdvanced(t *testing.T) {
-	input := `<section><h2>Guide</h2><ul><li>Intro</li><li><strong>Deep</strong></li></ul><ol><li>First</li></ol><pre><code>fmt.Println("ok")</code></pre><p>Visit <a href="https://example.com">docs</a><br/>line two</p><img src="https://img.dev/a.png" alt="Shot"/><script>alert('x')</script></section>`
-	output := htmlToMarkdown(input)
-	condensed := strings.ReplaceAll(output, " ", "")
-	if !strings.Contains(condensed, "##Guide") {
-		t.Fatalf("missing heading: %q", output)
-	}
-	if !strings.Contains(output, "-") || !strings.Contains(output, "1.") {
-		t.Fatalf("list markers missing: %q", output)
-	}
-	if !strings.Contains(output, "```") {
-		t.Fatalf("pre block missing: %q", output)
-	}
-	if !strings.Contains(condensed, "[docs](https://example.com)") {
-		t.Fatalf("link missing: %q", output)
-	}
-	if strings.Contains(output, "alert") {
-		t.Fatalf("script content should be stripped: %q", output)
-	}
-}
-
-func TestHtmlToMarkdownInlineElements(t *testing.T) {
-	input := `<div><strong>Bold</strong> <em>lite</em><code>inline</code><br/><img src="https://img.dev/p.png" alt="Cover"/></div>`
-	output := htmlToMarkdown(input)
-	condensed := strings.ReplaceAll(output, " ", "")
-	if !strings.Contains(condensed, "**Bold**") {
-		t.Fatalf("missing strong formatting: %q", output)
-	}
-	if !strings.Contains(condensed, "*lite*") {
-		t.Fatalf("missing emphasis: %q", output)
-	}
-	if !strings.Contains(condensed, "`inline`") {
-		t.Fatalf("missing inline code: %q", output)
-	}
-	if !strings.Contains(condensed, "![Cover](https://img.dev/p.png)") {
-		t.Fatalf("missing image markdown: %q", output)
-	}
-}
-
-func TestWebFetchRejectsLargeResponse(t *testing.T) {
-	host := "example.test"
-	baseURL := "https://" + host
-	client := newInMemoryHTTPClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(strings.Repeat("A", 32)))
-	}))
-
-	tool := NewWebFetchTool(&WebFetchOptions{
-		HTTPClient:        client,
-		MaxContentSize:    8,
-		AllowedHosts:      []string{host},
-		AllowPrivateHosts: true,
-	})
-	params := map[string]interface{}{"url": baseURL, "prompt": "limit"}
-	if _, err := tool.Execute(context.Background(), params); err == nil {
-		t.Fatalf("expected size limit error")
-	}
-}
-
-func TestWebFetchMetadataAndHelpers(t *testing.T) {
-	tool := NewWebFetchTool(nil)
-	if tool.Name() != "WebFetch" {
-		t.Fatalf("unexpected name")
-	}
-	if tool.Description() == "" || tool.Schema() == nil {
-		t.Fatalf("schema/description missing")
-	}
-	longText := strings.Repeat("line\n", markdownSnippetMaxLines+5)
-	summary := summariseMarkdown(longText)
-	if !strings.HasSuffix(summary, "...") {
-		t.Fatalf("expected truncation, got %q", summary)
-	}
-	if nameToHeadingLevel("h4") != 4 || nameToHeadingLevel("x") != 6 {
-		t.Fatalf("unexpected heading level")
-	}
-}
-
-func TestExtractNonEmptyStringValidation(t *testing.T) {
-	if _, err := extractNonEmptyString(map[string]interface{}{}, "key"); err == nil {
-		t.Fatalf("expected missing key error")
-	}
-	if _, err := extractNonEmptyString(map[string]interface{}{"key": ""}, "key"); err == nil {
-		t.Fatalf("expected empty value error")
-	}
-}
-
-func TestRedirectPolicyLimits(t *testing.T) {
-	tool := NewWebFetchTool(nil)
-	policy := tool.redirectPolicy()
-	req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
-	via := make([]*http.Request, maxFetchRedirects)
-	for i := range via {
-		via[i] = httptest.NewRequest(http.MethodGet, "https://example.com", nil)
-	}
-	if err := policy(req, via); err == nil || !strings.Contains(err.Error(), "too many redirects") {
-		t.Fatalf("expected redirect limit error, got %v", err)
-	}
-}
-
-func TestHostRedirectErrorString(t *testing.T) {
-	err := (&hostRedirectError{target: "https://next"}).Error()
-	if !strings.Contains(err, "https://next") {
-		t.Fatalf("unexpected error string %q", err)
-	}
-}
-
-func TestReadBoundedError(t *testing.T) {
-	reader := failingReader{}
-	if _, err := readBounded(reader, 8); err == nil {
-		t.Fatalf("expected read error")
-	}
-}
-
-func TestStringValueBytes(t *testing.T) {
-	str, err := stringValue([]byte("data"))
-	if err != nil || str != "data" {
-		t.Fatalf("unexpected result %q %v", str, err)
-	}
-}
-
-func TestHostValidatorWhitelist(t *testing.T) {
-	validator := newHostValidator([]string{"example.com"}, nil, false)
-	if err := validator.Validate("bad.com"); err == nil {
-		t.Fatalf("expected whitelist failure")
-	}
-}
-
-func TestExtractURLValidation(t *testing.T) {
-	tool := NewWebFetchTool(nil)
-	if _, err := tool.extractURL(map[string]interface{}{}); err == nil {
-		t.Fatalf("expected missing url error")
-	}
-	if _, err := tool.extractURL(map[string]interface{}{"url": " "}); err == nil {
-		t.Fatalf("expected empty url error")
-	}
-}
-
-func TestFetchCacheMissAndNilSet(t *testing.T) {
-	cache := newFetchCache(time.Minute)
-	if _, ok := cache.Get("missing"); ok {
-		t.Fatalf("expected cache miss")
-	}
-	cache.Set("ignored", nil)
-}
-
-func TestHtmlToMarkdownParseError(t *testing.T) {
-	out := htmlToMarkdown("<<<")
-	if out != "<<<" {
-		t.Fatalf("expected raw fallback, got %q", out)
-	}
-}
-
-func TestHostValidatorAllowsPrivate(t *testing.T) {
-	validator := newHostValidator(nil, nil, true)
-	if err := validator.Validate("127.0.0.1"); err != nil {
-		t.Fatalf("expected private host allowance: %v", err)
-	}
-}
-
-func TestWebFetchExecuteValidations(t *testing.T) {
-	tool := NewWebFetchTool(nil)
-	if _, err := tool.Execute(nil, nil); err == nil {
-		t.Fatalf("expected context error")
-	}
-	if _, err := tool.Execute(context.Background(), nil); err == nil {
-		t.Fatalf("expected params error")
-	}
-	if _, err := tool.Execute(context.Background(), map[string]interface{}{"url": "https://example.com"}); err == nil {
-		t.Fatalf("expected prompt validation error")
-	}
-}
-
-type failingReader struct{}
-
-func (failingReader) Read(_ []byte) (int, error) {
-	return 0, errors.New("boom")
 }

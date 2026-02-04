@@ -31,6 +31,22 @@ func TestResolveProjectRootFromEnv(t *testing.T) {
 	}
 }
 
+func TestResolveProjectRootFromEnvMissingPath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "missing")
+	t.Setenv("AGENTSDK_PROJECT_ROOT", root)
+	resolved, err := ResolveProjectRoot()
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	want, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	if resolved != want {
+		t.Fatalf("expected abs path %s, got %s", want, resolved)
+	}
+}
+
 func TestResolveProjectRootWalksUpForGoMod(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/demo\n"), 0o600); err != nil {

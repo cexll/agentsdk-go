@@ -8,13 +8,17 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/cexll/agentsdk-go/pkg/agent"
 	"github.com/cexll/agentsdk-go/pkg/config"
+	coreevents "github.com/cexll/agentsdk-go/pkg/core/events"
+	corehooks "github.com/cexll/agentsdk-go/pkg/core/hooks"
 	"github.com/cexll/agentsdk-go/pkg/message"
 	"github.com/cexll/agentsdk-go/pkg/model"
 	"github.com/cexll/agentsdk-go/pkg/runtime/commands"
 	"github.com/cexll/agentsdk-go/pkg/runtime/skills"
+	"github.com/cexll/agentsdk-go/pkg/security"
 	"github.com/cexll/agentsdk-go/pkg/tool"
 )
 
@@ -105,6 +109,193 @@ func TestRuntimeToolFlow(t *testing.T) {
 	}
 }
 
+func TestRuntimePermissionAskHandlerAllows(t *testing.T) {
+	root := newClaudeProjectWithSettings(t, `{"permissions":{"ask":["echo"]},"sandbox":{"enabled":true}}`)
+	mdl := &stubModel{responses: []*model.Response{
+		{Message: model.Message{Role: "assistant", ToolCalls: []model.ToolCall{{ID: "1", Name: "echo", Arguments: map[string]any{"text": "hi"}}}}},
+		{Message: model.Message{Role: "assistant", Content: "done"}},
+	}}
+
+	toolImpl := &echoTool{}
+	var called int
+	opts := Options{
+		ProjectRoot: root,
+		Model:       mdl,
+		Tools:       []tool.Tool{toolImpl},
+		PermissionRequestHandler: func(ctx context.Context, req PermissionRequest) (coreevents.PermissionDecisionType, error) {
+			called++
+			if req.ToolName != "echo" {
+				t.Fatalf("unexpected tool name %q", req.ToolName)
+			}
+			return coreevents.PermissionAllow, nil
+		},
+	}
+	rt, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+
+	if _, err := rt.Run(context.Background(), Request{Prompt: "call tool", ToolWhitelist: []string{"echo"}}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("expected handler call, got %d", called)
+	}
+	if toolImpl.calls != 1 {
+		t.Fatalf("expected tool execution, got %d", toolImpl.calls)
+	}
+}
+
+func TestRuntimePermissionAskHandlerDenies(t *testing.T) {
+	root := newClaudeProjectWithSettings(t, `{"permissions":{"ask":["echo"]},"sandbox":{"enabled":true}}`)
+	mdl := &stubModel{responses: []*model.Response{
+		{Message: model.Message{Role: "assistant", ToolCalls: []model.ToolCall{{ID: "1", Name: "echo", Arguments: map[string]any{"text": "hi"}}}}},
+		{Message: model.Message{Role: "assistant", Content: "done"}},
+	}}
+
+	toolImpl := &echoTool{}
+	var called int
+	opts := Options{
+		ProjectRoot: root,
+		Model:       mdl,
+		Tools:       []tool.Tool{toolImpl},
+		PermissionRequestHandler: func(context.Context, PermissionRequest) (coreevents.PermissionDecisionType, error) {
+			called++
+			return coreevents.PermissionDeny, nil
+		},
+	}
+	rt, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+
+	if _, err := rt.Run(context.Background(), Request{Prompt: "call tool", ToolWhitelist: []string{"echo"}}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("expected handler call, got %d", called)
+	}
+	if toolImpl.calls != 0 {
+		t.Fatalf("tool should not execute when denied, got %d", toolImpl.calls)
+	}
+}
+
+func TestRuntimePermissionAskAutoWhitelist(t *testing.T) {
+	root := newClaudeProjectWithSettings(t, `{"permissions":{"ask":["echo"]},"sandbox":{"enabled":true}}`)
+	mdl := &stubModel{responses: []*model.Response{
+		{Message: model.Message{Role: "assistant", ToolCalls: []model.ToolCall{{ID: "1", Name: "echo", Arguments: map[string]any{"text": "hi"}}}}},
+		{Message: model.Message{Role: "assistant", Content: "done"}},
+	}}
+
+	queue, err := security.NewApprovalQueue(filepath.Join(t.TempDir(), "approvals.json"))
+	if err != nil {
+		t.Fatalf("approval queue: %v", err)
+	}
+	rec, err := queue.Request("sess-1", "echo", nil)
+	if err != nil {
+		t.Fatalf("queue request: %v", err)
+	}
+	if _, err := queue.Approve(rec.ID, "tester", time.Hour); err != nil {
+		t.Fatalf("queue approve: %v", err)
+	}
+
+	toolImpl := &echoTool{}
+	opts := Options{
+		ProjectRoot:          root,
+		Model:                mdl,
+		Tools:                []tool.Tool{toolImpl},
+		ApprovalQueue:        queue,
+		ApprovalWhitelistTTL: time.Hour,
+	}
+	rt, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+
+	if _, err := rt.Run(context.Background(), Request{Prompt: "call tool", SessionID: "sess-1", ToolWhitelist: []string{"echo"}}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if toolImpl.calls != 1 {
+		t.Fatalf("expected tool execution via whitelist, got %d", toolImpl.calls)
+	}
+}
+
+func TestRuntimeHookAskUsesPermissionHandler(t *testing.T) {
+	root := newClaudeProject(t)
+	mdl := &stubModel{responses: []*model.Response{
+		{Message: model.Message{Role: "assistant", ToolCalls: []model.ToolCall{{ID: "1", Name: "echo", Arguments: map[string]any{"text": "hi"}}}}},
+		{Message: model.Message{Role: "assistant", Content: "done"}},
+	}}
+
+	toolImpl := &echoTool{}
+	var called int
+	opts := Options{
+		ProjectRoot: root,
+		Model:       mdl,
+		Tools:       []tool.Tool{toolImpl},
+		TypedHooks: []corehooks.ShellHook{{
+			Event:   coreevents.PreToolUse,
+			Command: "exit 2",
+		}},
+		PermissionRequestHandler: func(context.Context, PermissionRequest) (coreevents.PermissionDecisionType, error) {
+			called++
+			return coreevents.PermissionAllow, nil
+		},
+	}
+	rt, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+
+	if _, err := rt.Run(context.Background(), Request{Prompt: "call tool", ToolWhitelist: []string{"echo"}}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("expected handler call, got %d", called)
+	}
+	if toolImpl.calls != 1 {
+		t.Fatalf("expected tool execution, got %d", toolImpl.calls)
+	}
+}
+
+func TestRuntimeHookAskDeniedByPermissionHandler(t *testing.T) {
+	root := newClaudeProject(t)
+	mdl := &stubModel{responses: []*model.Response{
+		{Message: model.Message{Role: "assistant", ToolCalls: []model.ToolCall{{ID: "1", Name: "echo", Arguments: map[string]any{"text": "hi"}}}}},
+		{Message: model.Message{Role: "assistant", Content: "done"}},
+	}}
+
+	toolImpl := &echoTool{}
+	opts := Options{
+		ProjectRoot: root,
+		Model:       mdl,
+		Tools:       []tool.Tool{toolImpl},
+		TypedHooks: []corehooks.ShellHook{{
+			Event:   coreevents.PreToolUse,
+			Command: "exit 2",
+		}},
+		PermissionRequestHandler: func(context.Context, PermissionRequest) (coreevents.PermissionDecisionType, error) {
+			return coreevents.PermissionDeny, nil
+		},
+	}
+	rt, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close() })
+
+	if _, err := rt.Run(context.Background(), Request{Prompt: "call tool", ToolWhitelist: []string{"echo"}}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if toolImpl.calls != 0 {
+		t.Fatalf("tool should not execute when denied, got %d", toolImpl.calls)
+	}
+}
+
 func TestRuntimeToolExecutor_ErrorHistory(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -159,6 +350,56 @@ func TestRuntimeToolExecutor_ErrorHistory(t *testing.T) {
 				t.Fatalf("tool history entry malformed: %+v", msgs[0])
 			}
 		})
+	}
+}
+
+func TestRuntimeToolExecutor_PreToolUseDenialAddsToolResult(t *testing.T) {
+	reg := tool.NewRegistry()
+	impl := &echoTool{}
+	if err := reg.Register(impl); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+	exec := tool.NewExecutor(reg, nil)
+
+	hookExec := corehooks.NewExecutor()
+	hookExec.Register(corehooks.ShellHook{
+		Event:   coreevents.PreToolUse,
+		Command: "exit 1",
+	})
+
+	history := message.NewHistory()
+	rtExec := &runtimeToolExecutor{
+		executor: exec,
+		hooks:    &runtimeHookAdapter{executor: hookExec},
+		history:  history,
+		host:     "localhost",
+	}
+
+	call := agent.ToolCall{ID: "c1", Name: impl.Name(), Input: map[string]any{"text": "hi"}}
+	_, err := rtExec.Execute(context.Background(), call, agent.NewContext())
+	if err == nil {
+		t.Fatal("expected hook denial error")
+	}
+	if !errors.Is(err, ErrToolUseDenied) {
+		t.Fatalf("expected ErrToolUseDenied, got %v", err)
+	}
+	if impl.calls != 0 {
+		t.Fatalf("expected tool not to execute, got %d calls", impl.calls)
+	}
+
+	msgs := history.All()
+	if len(msgs) != 1 {
+		t.Fatalf("expected history entry, got %d", len(msgs))
+	}
+	if len(msgs[0].ToolCalls) != 1 {
+		t.Fatalf("expected tool history entry, got %+v", msgs[0])
+	}
+	var payload map[string]string
+	if unmarshalErr := json.Unmarshal([]byte(msgs[0].ToolCalls[0].Result), &payload); unmarshalErr != nil {
+		t.Fatalf("history tool result not valid json: %v", unmarshalErr)
+	}
+	if got := payload["error"]; got == "" {
+		t.Fatalf("expected error field, got %+v", payload)
 	}
 }
 
@@ -286,6 +527,19 @@ func newClaudeProject(t *testing.T) string {
 	}
 	settings := []byte(`{"model":"claude-3-opus"}`)
 	if err := os.WriteFile(filepath.Join(claude, "settings.json"), settings, 0o600); err != nil {
+		t.Fatalf("settings: %v", err)
+	}
+	return root
+}
+
+func newClaudeProjectWithSettings(t *testing.T, raw string) string {
+	t.Helper()
+	root := t.TempDir()
+	claude := filepath.Join(root, ".claude")
+	if err := os.MkdirAll(claude, 0o755); err != nil {
+		t.Fatalf("claude dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(claude, "settings.json"), []byte(raw), 0o600); err != nil {
 		t.Fatalf("settings: %v", err)
 	}
 	return root
