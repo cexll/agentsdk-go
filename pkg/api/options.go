@@ -682,29 +682,30 @@ func (h *runtimeHookAdapter) PreToolUse(ctx context.Context, evt coreevents.Tool
 		}
 	}
 
-	for _, res := range results {
-		switch res.Decision {
-		case corehooks.DecisionDeny:
-			return nil, fmt.Errorf("%w: %s", ErrToolUseDenied, evt.Name)
-		case corehooks.DecisionAsk:
-			return nil, fmt.Errorf("%w: %s", ErrToolUseRequiresApproval, evt.Name)
-		}
-	}
-
 	params := evt.Params
 	for _, res := range results {
-		if res.Permission == nil {
+		if res.Output == nil {
 			continue
 		}
-		toolInput, ok := res.Permission["tool_input"].(map[string]any)
-		if !ok {
-			continue
+		// Check top-level decision
+		if res.Output.Decision == "deny" {
+			return nil, fmt.Errorf("%w: %s", ErrToolUseDenied, evt.Name)
 		}
-		if name, ok := toolInput["name"].(string); ok && name != "" && name != evt.Name {
-			continue
+		// Check continue=false
+		if res.Output.Continue != nil && !*res.Output.Continue {
+			return nil, fmt.Errorf("%w: %s", ErrToolUseDenied, evt.Name)
 		}
-		if modified, ok := toolInput["params"].(map[string]any); ok {
-			params = modified
+		// Check hookSpecificOutput for PreToolUse
+		if hso := res.Output.HookSpecificOutput; hso != nil {
+			switch hso.PermissionDecision {
+			case "deny":
+				return nil, fmt.Errorf("%w: %s", ErrToolUseDenied, evt.Name)
+			case "ask":
+				return nil, fmt.Errorf("%w: %s", ErrToolUseRequiresApproval, evt.Name)
+			}
+			if hso.UpdatedInput != nil {
+				params = hso.UpdatedInput
+			}
 		}
 	}
 	return params, nil
@@ -724,6 +725,13 @@ func (h *runtimeHookAdapter) PostToolUse(ctx context.Context, evt coreevents.Too
 	for _, res := range results {
 		if res.Stderr != "" {
 			fmt.Fprint(os.Stderr, res.Stderr)
+		}
+	}
+
+	// Check if any hook wants to stop
+	for _, res := range results {
+		if res.Output != nil && res.Output.Continue != nil && !*res.Output.Continue {
+			return fmt.Errorf("hooks: PostToolUse hook requested stop: %s", res.Output.StopReason)
 		}
 	}
 	return nil
@@ -769,13 +777,18 @@ func (h *runtimeHookAdapter) PermissionRequest(ctx context.Context, evt coreeven
 
 	decision := coreevents.PermissionAllow
 	for _, res := range results {
-		switch res.Decision {
-		case corehooks.DecisionDeny:
+		if res.Output == nil {
+			continue
+		}
+		switch res.Output.Decision {
+		case "deny":
 			decision = coreevents.PermissionDeny
-		case corehooks.DecisionAsk:
+		case "ask":
 			if decision != coreevents.PermissionDeny {
 				decision = coreevents.PermissionAsk
 			}
+		case "allow":
+			// keep current decision
 		}
 	}
 	h.record(coreevents.Event{Type: coreevents.PermissionRequest, Payload: evt})

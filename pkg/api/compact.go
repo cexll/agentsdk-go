@@ -185,7 +185,10 @@ func (c *compactor) preCompact(ctx context.Context, sessionID string, payload co
 		return false, err
 	}
 	for _, res := range results {
-		if res.Decision == corehooks.DecisionDeny || res.Decision == corehooks.DecisionAsk {
+		if res.Decision == corehooks.DecisionBlockingError {
+			return false, nil
+		}
+		if res.Output != nil && res.Output.Continue != nil && !*res.Output.Continue {
 			return false, nil
 		}
 	}

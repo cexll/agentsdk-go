@@ -161,39 +161,57 @@ func validateHooksConfig(h *HooksConfig) []error {
 		return nil
 	}
 	var errs []error
-	errs = append(errs, validateHookMap("hooks.preToolUse", h.PreToolUse)...)
-	errs = append(errs, validateHookMap("hooks.postToolUse", h.PostToolUse)...)
-	errs = append(errs, validateHookMap("hooks.postToolUseFailure", h.PostToolUseFailure)...)
-	errs = append(errs, validateHookMap("hooks.permissionRequest", h.PermissionRequest)...)
-	errs = append(errs, validateHookMap("hooks.sessionStart", h.SessionStart)...)
-	errs = append(errs, validateHookMap("hooks.sessionEnd", h.SessionEnd)...)
-	errs = append(errs, validateHookMap("hooks.subagentStart", h.SubagentStart)...)
-	errs = append(errs, validateHookMap("hooks.subagentStop", h.SubagentStop)...)
-	errs = append(errs, validateHookMap("hooks.stop", h.Stop)...)
-	errs = append(errs, validateHookMap("hooks.notification", h.Notification)...)
-	errs = append(errs, validateHookMap("hooks.userPromptSubmit", h.UserPromptSubmit)...)
-	errs = append(errs, validateHookMap("hooks.preCompact", h.PreCompact)...)
+	errs = append(errs, validateHookEntries("hooks.PreToolUse", h.PreToolUse)...)
+	errs = append(errs, validateHookEntries("hooks.PostToolUse", h.PostToolUse)...)
+	errs = append(errs, validateHookEntries("hooks.PostToolUseFailure", h.PostToolUseFailure)...)
+	errs = append(errs, validateHookEntries("hooks.PermissionRequest", h.PermissionRequest)...)
+	errs = append(errs, validateHookEntries("hooks.SessionStart", h.SessionStart)...)
+	errs = append(errs, validateHookEntries("hooks.SessionEnd", h.SessionEnd)...)
+	errs = append(errs, validateHookEntries("hooks.SubagentStart", h.SubagentStart)...)
+	errs = append(errs, validateHookEntries("hooks.SubagentStop", h.SubagentStop)...)
+	errs = append(errs, validateHookEntries("hooks.Stop", h.Stop)...)
+	errs = append(errs, validateHookEntries("hooks.Notification", h.Notification)...)
+	errs = append(errs, validateHookEntries("hooks.UserPromptSubmit", h.UserPromptSubmit)...)
+	errs = append(errs, validateHookEntries("hooks.PreCompact", h.PreCompact)...)
 	return errs
 }
 
-func validateHookMap(label string, hooks map[string]string) []error {
-	if len(hooks) == 0 {
+func validateHookEntries(label string, entries []HookMatcherEntry) []error {
+	if len(entries) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, len(hooks))
-	for k := range hooks {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
 	var errs []error
-	for _, tool := range keys {
-		cmd := hooks[tool]
-		if err := validateToolPattern(tool); err != nil {
-			errs = append(errs, fmt.Errorf("%s[%s]: %w", label, tool, err))
+	for i, entry := range entries {
+		if entry.Matcher != "" && entry.Matcher != "*" {
+			if err := validateToolPattern(entry.Matcher); err != nil {
+				errs = append(errs, fmt.Errorf("%s[%d].matcher: %w", label, i, err))
+			}
 		}
-		if strings.TrimSpace(cmd) == "" {
-			errs = append(errs, fmt.Errorf("%s[%s]: command is empty", label, tool))
+		if len(entry.Hooks) == 0 {
+			errs = append(errs, fmt.Errorf("%s[%d]: hooks array is empty", label, i))
+			continue
+		}
+		for j, hook := range entry.Hooks {
+			switch hook.Type {
+			case "command", "":
+				if strings.TrimSpace(hook.Command) == "" {
+					errs = append(errs, fmt.Errorf("%s[%d].hooks[%d]: command is required for type %q", label, i, j, hook.Type))
+				}
+			case "prompt":
+				if strings.TrimSpace(hook.Prompt) == "" {
+					errs = append(errs, fmt.Errorf("%s[%d].hooks[%d]: prompt is required for type \"prompt\"", label, i, j))
+				}
+			case "agent":
+				// agent hooks require a prompt
+				if strings.TrimSpace(hook.Prompt) == "" {
+					errs = append(errs, fmt.Errorf("%s[%d].hooks[%d]: prompt is required for type \"agent\"", label, i, j))
+				}
+			default:
+				errs = append(errs, fmt.Errorf("%s[%d].hooks[%d]: unsupported type %q", label, i, j, hook.Type))
+			}
+			if hook.Timeout < 0 {
+				errs = append(errs, fmt.Errorf("%s[%d].hooks[%d]: timeout must be >= 0", label, i, j))
+			}
 		}
 	}
 	return errs

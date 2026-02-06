@@ -93,7 +93,8 @@ func mergePermissions(lower, higher *PermissionsConfig) *PermissionsConfig {
 	return out
 }
 
-// mergeHooks merges hook command maps per tool name.
+// mergeHooks merges hook matcher entries per event type.
+// Higher-priority entries are appended after lower-priority ones.
 func mergeHooks(lower, higher *HooksConfig) *HooksConfig {
 	if lower == nil && higher == nil {
 		return nil
@@ -105,13 +106,45 @@ func mergeHooks(lower, higher *HooksConfig) *HooksConfig {
 		return cloneHooks(lower)
 	}
 	out := cloneHooks(lower)
-	out.PreToolUse = mergeMaps(lower.PreToolUse, higher.PreToolUse)
-	out.PostToolUse = mergeMaps(lower.PostToolUse, higher.PostToolUse)
-	out.PermissionRequest = mergeMaps(lower.PermissionRequest, higher.PermissionRequest)
-	out.SessionStart = mergeMaps(lower.SessionStart, higher.SessionStart)
-	out.SessionEnd = mergeMaps(lower.SessionEnd, higher.SessionEnd)
-	out.SubagentStart = mergeMaps(lower.SubagentStart, higher.SubagentStart)
-	out.SubagentStop = mergeMaps(lower.SubagentStop, higher.SubagentStop)
+	out.PreToolUse = mergeHookEntries(lower.PreToolUse, higher.PreToolUse)
+	out.PostToolUse = mergeHookEntries(lower.PostToolUse, higher.PostToolUse)
+	out.PostToolUseFailure = mergeHookEntries(lower.PostToolUseFailure, higher.PostToolUseFailure)
+	out.PermissionRequest = mergeHookEntries(lower.PermissionRequest, higher.PermissionRequest)
+	out.SessionStart = mergeHookEntries(lower.SessionStart, higher.SessionStart)
+	out.SessionEnd = mergeHookEntries(lower.SessionEnd, higher.SessionEnd)
+	out.SubagentStart = mergeHookEntries(lower.SubagentStart, higher.SubagentStart)
+	out.SubagentStop = mergeHookEntries(lower.SubagentStop, higher.SubagentStop)
+	out.Stop = mergeHookEntries(lower.Stop, higher.Stop)
+	out.Notification = mergeHookEntries(lower.Notification, higher.Notification)
+	out.UserPromptSubmit = mergeHookEntries(lower.UserPromptSubmit, higher.UserPromptSubmit)
+	out.PreCompact = mergeHookEntries(lower.PreCompact, higher.PreCompact)
+	return out
+}
+
+// mergeHookEntries concatenates lower and higher hook entries.
+func mergeHookEntries(lower, higher []HookMatcherEntry) []HookMatcherEntry {
+	if len(lower) == 0 && len(higher) == 0 {
+		return nil
+	}
+	out := make([]HookMatcherEntry, 0, len(lower)+len(higher))
+	out = append(out, cloneHookEntries(lower)...)
+	out = append(out, cloneHookEntries(higher)...)
+	return out
+}
+
+// cloneHookEntries deep-copies a slice of HookMatcherEntry.
+func cloneHookEntries(src []HookMatcherEntry) []HookMatcherEntry {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]HookMatcherEntry, len(src))
+	for i, entry := range src {
+		out[i] = HookMatcherEntry{Matcher: entry.Matcher}
+		if len(entry.Hooks) > 0 {
+			out[i].Hooks = make([]HookDefinition, len(entry.Hooks))
+			copy(out[i].Hooks, entry.Hooks)
+		}
+	}
 	return out
 }
 
@@ -367,13 +400,18 @@ func cloneHooks(src *HooksConfig) *HooksConfig {
 		return nil
 	}
 	out := *src
-	out.PreToolUse = mergeMaps(nil, src.PreToolUse)
-	out.PostToolUse = mergeMaps(nil, src.PostToolUse)
-	out.PermissionRequest = mergeMaps(nil, src.PermissionRequest)
-	out.SessionStart = mergeMaps(nil, src.SessionStart)
-	out.SessionEnd = mergeMaps(nil, src.SessionEnd)
-	out.SubagentStart = mergeMaps(nil, src.SubagentStart)
-	out.SubagentStop = mergeMaps(nil, src.SubagentStop)
+	out.PreToolUse = cloneHookEntries(src.PreToolUse)
+	out.PostToolUse = cloneHookEntries(src.PostToolUse)
+	out.PostToolUseFailure = cloneHookEntries(src.PostToolUseFailure)
+	out.PermissionRequest = cloneHookEntries(src.PermissionRequest)
+	out.SessionStart = cloneHookEntries(src.SessionStart)
+	out.SessionEnd = cloneHookEntries(src.SessionEnd)
+	out.SubagentStart = cloneHookEntries(src.SubagentStart)
+	out.SubagentStop = cloneHookEntries(src.SubagentStop)
+	out.Stop = cloneHookEntries(src.Stop)
+	out.Notification = cloneHookEntries(src.Notification)
+	out.UserPromptSubmit = cloneHookEntries(src.UserPromptSubmit)
+	out.PreCompact = cloneHookEntries(src.PreCompact)
 	return &out
 }
 

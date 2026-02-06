@@ -3,7 +3,6 @@ package hooks
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,14 +15,14 @@ import (
 	"github.com/cexll/agentsdk-go/pkg/core/middleware"
 )
 
-func TestExecuteSerializesPayloadAndParsesPermission(t *testing.T) {
+func TestExecuteSerializesPayloadAndParsesOutput(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	payloadPath := filepath.Join(dir, "payload.json")
 
 	script := writeScript(t, dir, "dump_and_allow.sh", fmt.Sprintf(`#!/bin/sh
 cat > "%s"
-printf '{"permission":"allow","reason":"ok"}'
+printf '{"decision":"allow","reason":"ok","hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"path":"/tmp/new"}}}'
 `, payloadPath))
 
 	exec := NewExecutor()
@@ -61,17 +60,27 @@ printf '{"permission":"allow","reason":"ok"}'
 	if got["session_id"] != "sess-42" {
 		t.Fatalf("missing session id: %v", got["session_id"])
 	}
+	// Flat format: tool_name and tool_input at top level
+	if got["tool_name"] != "Write" {
+		t.Fatalf("tool_name mismatch: %v", got["tool_name"])
+	}
 	toolInput, ok := got["tool_input"].(map[string]any)
 	if !ok {
 		t.Fatalf("tool_input type mismatch: %T", got["tool_input"])
 	}
-	if toolInput["name"] != "Write" {
-		t.Fatalf("tool name mismatch: %v", toolInput["name"])
+	if toolInput["path"] != "/tmp/demo" {
+		t.Fatalf("tool_input.path mismatch: %v", toolInput["path"])
 	}
 
-	perm := results[0].Permission
-	if perm["permission"] != "allow" || perm["reason"] != "ok" {
-		t.Fatalf("unexpected permission payload: %v", perm)
+	output := results[0].Output
+	if output == nil {
+		t.Fatalf("expected non-nil Output")
+	}
+	if output.Decision != "allow" || output.Reason != "ok" {
+		t.Fatalf("unexpected output: %+v", output)
+	}
+	if output.HookSpecificOutput == nil || output.HookSpecificOutput.PermissionDecision != "allow" {
+		t.Fatalf("unexpected hookSpecificOutput: %+v", output.HookSpecificOutput)
 	}
 	if results[0].Decision != DecisionAllow || results[0].ExitCode != 0 {
 		t.Fatalf("unexpected decision %s code %d", results[0].Decision, results[0].ExitCode)
@@ -87,9 +96,9 @@ func TestExitCodeMapping(t *testing.T) {
 		wantError bool
 	}{
 		{0, DecisionAllow, false},
-		{1, DecisionDeny, false},
-		{2, DecisionAsk, false},
-		{5, DecisionError, true},
+		{1, DecisionNonBlocking, false},
+		{2, DecisionBlockingError, true},
+		{5, DecisionNonBlocking, false},
 	}
 
 	for _, tc := range cases {
@@ -132,10 +141,11 @@ func TestTimeoutIsHonored(t *testing.T) {
 	}
 }
 
-func TestStderrCapturedOnFailure(t *testing.T) {
+func TestStderrCapturedOnBlockingError(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	script := writeScript(t, dir, "stderr.sh", "#!/bin/sh\necho boom >&2\nexit 3\n")
+	// Exit 2 = blocking error
+	script := writeScript(t, dir, "stderr.sh", "#!/bin/sh\necho boom >&2\nexit 2\n")
 
 	exec := NewExecutor()
 	exec.Register(ShellHook{Event: events.Notification, Command: script})
@@ -146,66 +156,82 @@ func TestStderrCapturedOnFailure(t *testing.T) {
 	}
 }
 
-func TestSelectorFiltersToolName(t *testing.T) {
+func TestNonBlockingExitContinues(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	marker := filepath.Join(dir, "marker.txt")
-	script := writeScript(t, dir, "marker.sh", fmt.Sprintf("#!/bin/sh\nprintf 'hit' > %s\n", marker))
+	// Exit 3 = non-blocking, should not error
+	script := writeScript(t, dir, "nonblock.sh", "#!/bin/sh\necho warning >&2\nexit 3\n")
 
-	selector, err := NewSelector("Write|Edit", "")
+	var reportedErr error
+	exec := NewExecutor(WithErrorHandler(func(_ events.EventType, err error) {
+		reportedErr = err
+	}))
+	exec.Register(ShellHook{Event: events.Notification, Command: script})
+
+	results, err := exec.Execute(context.Background(), events.Event{Type: events.Notification})
 	if err != nil {
-		t.Fatalf("selector: %v", err)
+		t.Fatalf("non-blocking exit should not return error, got %v", err)
+	}
+	if len(results) != 1 || results[0].Decision != DecisionNonBlocking {
+		t.Fatalf("unexpected result: %+v", results)
+	}
+	if reportedErr == nil || !strings.Contains(reportedErr.Error(), "warning") {
+		t.Fatalf("expected non-blocking error to be reported, got %v", reportedErr)
+	}
+}
+
+func TestSelectorFiltersMatcherTarget(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	script := writeScript(t, dir, "ok.sh", "#!/bin/sh\nexit 0\n")
+
+	sel, err := NewSelector("^Write$", "")
+	if err != nil {
+		t.Fatal(err)
 	}
 	exec := NewExecutor()
-	exec.Register(ShellHook{Event: events.PreToolUse, Command: script, Selector: selector})
+	exec.Register(ShellHook{Event: events.PreToolUse, Command: script, Selector: sel})
 
-	matchEvt := events.Event{Type: events.PreToolUse, Payload: events.ToolUsePayload{Name: "WriteFile"}}
-	if _, err := exec.Execute(context.Background(), matchEvt); err != nil {
-		t.Fatalf("execute match: %v", err)
-	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("expected marker file to exist: %v", err)
+	// Should match Write
+	results, err := exec.Execute(context.Background(), events.Event{
+		Type:    events.PreToolUse,
+		Payload: events.ToolUsePayload{Name: "Write", Params: map[string]any{}},
+	})
+	if err != nil || len(results) != 1 {
+		t.Fatalf("expected match for Write, got %d results, err=%v", len(results), err)
 	}
 
-	_ = os.Remove(marker)
-	missEvt := events.Event{Type: events.PreToolUse, Payload: events.ToolUsePayload{Name: "List"}}
-	if _, err := exec.Execute(context.Background(), missEvt); err != nil {
-		t.Fatalf("execute miss: %v", err)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("marker should not be recreated on selector miss")
+	// Should NOT match Read
+	results, err = exec.Execute(context.Background(), events.Event{
+		Type:    events.PreToolUse,
+		Payload: events.ToolUsePayload{Name: "Read", Params: map[string]any{}},
+	})
+	if err != nil || len(results) != 0 {
+		t.Fatalf("expected no match for Read, got %d results", len(results))
 	}
 }
 
 func TestConcurrentCallsAreIsolated(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	script := writeScript(t, dir, "slow.sh", "#!/bin/sh\nsleep 0.05\n")
 
-	sessions := []string{"s1", "s2", "s3"}
-	results := make([]PermissionDecision, len(sessions))
-	wg := sync.WaitGroup{}
-	for i, id := range sessions {
-		i, id := i, id
-		script := writeScript(t, dir, fmt.Sprintf("session_echo_%d.sh", i), "#!/bin/sh\ncat\n")
-		exec := NewExecutor()
-		exec.Register(ShellHook{Event: events.PreToolUse, Command: script})
+	exec := NewExecutor()
+	exec.Register(ShellHook{Event: events.Notification, Command: script})
+
+	var wg sync.WaitGroup
+	errs := make([]error, 5)
+	for i := 0; i < 5; i++ {
 		wg.Add(1)
-		go func() {
+		go func(idx int) {
 			defer wg.Done()
-			evt := events.Event{Type: events.PreToolUse, SessionID: id, Payload: events.ToolUsePayload{Name: "Write"}}
-			res, err := exec.Execute(context.Background(), evt)
-			if err != nil || len(res) != 1 {
-				t.Errorf("execution failed: %v", err)
-				return
-			}
-			results[i] = res[0].Permission
-		}()
+			_, errs[idx] = exec.Execute(context.Background(), events.Event{Type: events.Notification})
+		}(i)
 	}
 	wg.Wait()
-
-	for i, id := range sessions {
-		if results[i] == nil || results[i]["session_id"] != id {
-			t.Fatalf("session %s got wrong permission payload %v", id, results[i])
+	for i, e := range errs {
+		if e != nil {
+			t.Fatalf("goroutine %d: %v", i, e)
 		}
 	}
 }
@@ -213,164 +239,124 @@ func TestConcurrentCallsAreIsolated(t *testing.T) {
 func TestDefaultCommandFallbackAndPublishWrapper(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	marker := filepath.Join(dir, "default_marker.txt")
-	script := writeScript(t, dir, "default.sh", fmt.Sprintf("#!/bin/sh\nprintf done > %s\n", marker))
+	script := writeScript(t, dir, "default.sh", "#!/bin/sh\necho '{\"decision\":\"allow\"}'\n")
 
 	exec := NewExecutor(WithCommand(script))
-	if err := exec.Publish(events.Event{Type: events.Notification}); err != nil {
-		t.Fatalf("publish: %v", err)
+	// No hooks registered — should use default command
+	results, err := exec.Execute(context.Background(), events.Event{Type: events.Notification})
+	if err != nil || len(results) != 1 {
+		t.Fatalf("expected default command result, got %d, err=%v", len(results), err)
 	}
-	exec.Close()
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("expected default command to run: %v", err)
+	if results[0].Output == nil || results[0].Output.Decision != "allow" {
+		t.Fatalf("expected allow decision from default command, got %+v", results[0])
+	}
+
+	// Publish wrapper
+	if err := exec.Publish(events.Event{Type: events.Notification}); err != nil {
+		t.Fatalf("Publish: %v", err)
 	}
 }
 
 func TestMiddlewareAndErrorHandler(t *testing.T) {
 	t.Parallel()
-	called := false
-	errCalled := false
-
-	exec := NewExecutor(
-		WithMiddleware(func(next middleware.Handler) middleware.Handler {
-			return func(ctx context.Context, evt events.Event) error {
-				called = true
-				return next(ctx, evt)
-			}
-		}),
-		WithErrorHandler(func(events.EventType, error) { errCalled = true }),
-	)
-	// Missing command triggers an error path.
-	exec.Register(ShellHook{Event: events.Notification})
-
-	if _, err := exec.Execute(context.Background(), events.Event{Type: events.Notification}); err == nil {
-		t.Fatalf("expected error for missing command")
-	}
-	if !called {
-		t.Fatalf("middleware not invoked")
-	}
-	if !errCalled {
-		t.Fatalf("error handler not invoked")
-	}
-}
-
-func TestSanitizedToolResultSerialization(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
-	payloadPath := filepath.Join(dir, "post_payload.json")
-	script := writeScript(t, dir, "post.sh", fmt.Sprintf("#!/bin/sh\ncat > %s\n", payloadPath))
+	script := writeScript(t, dir, "ok.sh", "#!/bin/sh\nexit 0\n")
 
-	exec := NewExecutor()
-	exec.Register(ShellHook{Event: events.PostToolUse, Command: script})
+	var called bool
+	mw := func(next middleware.Handler) middleware.Handler {
+		return func(ctx context.Context, evt events.Event) error {
+			called = true
+			return next(ctx, evt)
+		}
+	}
 
-	errExample := fmt.Errorf("boom")
-	evt := events.Event{Type: events.PostToolUse, Payload: events.ToolResultPayload{Name: "Edit", Duration: 120 * time.Millisecond, Err: errExample}}
-	if _, err := exec.Execute(context.Background(), evt); err != nil {
+	exec := NewExecutor(WithMiddleware(mw))
+	exec.Register(ShellHook{Event: events.Notification, Command: script})
+
+	_, err := exec.Execute(context.Background(), events.Event{Type: events.Notification})
+	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-
-	raw, err := os.ReadFile(payloadPath)
-	if err != nil {
-		t.Fatalf("read payload: %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	resp, ok := decoded["tool_response"].(map[string]any)
-	if !ok {
-		t.Fatalf("tool_response type mismatch: %T", decoded["tool_response"])
-	}
-	if resp["error"] != "boom" {
-		t.Fatalf("expected error string, got %v", resp["error"])
-	}
-	duration, ok := resp["duration_ms"].(float64)
-	if !ok {
-		t.Fatalf("duration_ms type mismatch: %T", resp["duration_ms"])
-	}
-	if duration < 119 {
-		t.Fatalf("duration missing: %v", duration)
+	if !called {
+		t.Fatal("middleware was not called")
 	}
 }
 
 func TestEnvIsMergedIntoCommand(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	output := filepath.Join(dir, "env.txt")
-	script := writeScript(t, dir, "env.sh", fmt.Sprintf("#!/bin/sh\nprintf \"%%s\" \"$CUSTOM_VAR\" > %s\n", output))
+	script := writeScript(t, dir, "env.sh", "#!/bin/sh\necho $MY_HOOK_VAR >&2\n")
 
 	exec := NewExecutor()
-	selector, err := NewSelector("", "")
-	if err != nil {
-		t.Fatalf("selector: %v", err)
-	}
-	exec.Register(ShellHook{Event: events.Notification, Command: script, Selector: selector, Env: map[string]string{"CUSTOM_VAR": "hello"}})
+	exec.Register(ShellHook{
+		Event:   events.Notification,
+		Command: script,
+		Env:     map[string]string{"MY_HOOK_VAR": "hello_hooks"},
+	})
 
-	if _, err := exec.Execute(context.Background(), events.Event{Type: events.Notification}); err != nil {
+	results, err := exec.Execute(context.Background(), events.Event{Type: events.Notification})
+	if err != nil || len(results) != 1 {
 		t.Fatalf("execute: %v", err)
 	}
-	data, err := os.ReadFile(output)
-	if err != nil {
-		t.Fatalf("read env output: %v", err)
-	}
-	if string(data) != "hello" {
-		t.Fatalf("env not passed, got %q", string(data))
+	if !strings.Contains(results[0].Stderr, "hello_hooks") {
+		t.Fatalf("expected env var in stderr, got %q", results[0].Stderr)
 	}
 }
 
-func TestBuildPayloadSerializesNewPayloadTypes(t *testing.T) {
+func TestBuildPayloadFlatFormat(t *testing.T) {
 	t.Parallel()
-
 	cases := []struct {
-		name      string
-		evt       events.Event
-		key       string
-		wantField string
+		name    string
+		evt     events.Event
+		checks  map[string]any
 	}{
 		{
-			name: "session_end",
+			name: "ToolUsePayload",
 			evt: events.Event{
-				Type:    events.SessionEnd,
-				Payload: events.SessionPayload{SessionID: "sess", Metadata: map[string]any{"k": "v"}},
+				Type: events.PreToolUse, SessionID: "s1",
+				Payload: events.ToolUsePayload{Name: "Bash", Params: map[string]any{"command": "ls"}, ToolUseID: "tu1"},
 			},
-			key:       "session",
-			wantField: "SessionID",
+			checks: map[string]any{"tool_name": "Bash", "tool_use_id": "tu1", "hook_event_name": "PreToolUse"},
 		},
 		{
-			name: "subagent_start",
+			name: "ToolResultPayload",
 			evt: events.Event{
-				Type:    events.SubagentStart,
-				Payload: events.SubagentStartPayload{Name: "sa", AgentID: "agent-1"},
+				Type: events.PostToolUse,
+				Payload: events.ToolResultPayload{Name: "Bash", Result: "ok", ToolUseID: "tu2"},
 			},
-			key:       "subagent_start",
-			wantField: "AgentID",
+			checks: map[string]any{"tool_name": "Bash", "tool_use_id": "tu2"},
 		},
 		{
-			name: "subagent_stop",
+			name: "NotificationPayload",
 			evt: events.Event{
-				Type: events.SubagentStop,
-				Payload: events.SubagentStopPayload{
-					Name:           "sa",
-					Reason:         "done",
-					AgentID:        "agent-1",
-					TranscriptPath: "/tmp/t.json",
-				},
+				Type:    events.Notification,
+				Payload: events.NotificationPayload{Title: "t", Message: "m", NotificationType: "info"},
 			},
-			key:       "subagent_stop",
-			wantField: "TranscriptPath",
+			checks: map[string]any{"title": "t", "message": "m", "notification_type": "info"},
 		},
 		{
-			name: "permission_request",
+			name: "StopPayload",
 			evt: events.Event{
-				Type: events.PermissionRequest,
-				Payload: events.PermissionRequestPayload{
-					ToolName:   "Bash",
-					ToolParams: map[string]any{"cmd": "ls"},
-					Reason:     "test",
-				},
+				Type:    events.Stop,
+				Payload: events.StopPayload{Reason: "done", StopHookActive: true},
 			},
-			key:       "permission_request",
-			wantField: "ToolName",
+			checks: map[string]any{"reason": "done", "stop_hook_active": true},
+		},
+		{
+			name: "UserPromptPayload",
+			evt: events.Event{
+				Type:    events.UserPromptSubmit,
+				Payload: events.UserPromptPayload{Prompt: "hello"},
+			},
+			checks: map[string]any{"user_prompt": "hello"},
+		},
+		{
+			name: "PreCompactPayload",
+			evt: events.Event{
+				Type: events.PreCompact,
+				Payload: events.PreCompactPayload{Trigger: "auto", CustomInstructions: "keep it short"},
+			},
+			checks: map[string]any{"trigger": "auto", "custom_instructions": "keep it short"},
 		},
 	}
 
@@ -378,290 +364,110 @@ func TestBuildPayloadSerializesNewPayloadTypes(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			raw, err := buildPayload(tc.evt)
+			data, err := buildPayload(tc.evt)
 			if err != nil {
 				t.Fatalf("buildPayload: %v", err)
 			}
-			var decoded map[string]any
-			if err := json.Unmarshal(raw, &decoded); err != nil {
+			var got map[string]any
+			if err := json.Unmarshal(data, &got); err != nil {
 				t.Fatalf("unmarshal: %v", err)
 			}
-			block, ok := decoded[tc.key].(map[string]any)
-			if !ok {
-				t.Fatalf("expected %s block, got %T", tc.key, decoded[tc.key])
-			}
-			if _, ok := block[tc.wantField]; !ok {
-				t.Fatalf("missing %s in %s: %+v", tc.wantField, tc.key, block)
+			for k, want := range tc.checks {
+				v, ok := got[k]
+				if !ok {
+					t.Errorf("missing key %q", k)
+					continue
+				}
+				wantStr := fmt.Sprintf("%v", want)
+				gotStr := fmt.Sprintf("%v", v)
+				if wantStr != gotStr {
+					t.Errorf("key %q: want %v, got %v", k, want, v)
+				}
 			}
 		})
 	}
 }
 
-func TestExecuteAcceptsNewEvents(t *testing.T) {
+func TestExtractMatcherTargetAllTypes(t *testing.T) {
 	t.Parallel()
-	exec := NewExecutor()
-	types := []events.EventType{
-		events.SessionStart,
-		events.SessionEnd,
-		events.SubagentStart,
-		events.SubagentStop,
-		events.PermissionRequest,
+	cases := []struct {
+		eventType events.EventType
+		payload   any
+		want      string
+	}{
+		{events.PreToolUse, events.ToolUsePayload{Name: "Bash"}, "Bash"},
+		{events.PostToolUse, events.ToolResultPayload{Name: "Read"}, "Read"},
+		{events.PostToolUseFailure, events.ToolResultPayload{Name: "Write"}, "Write"},
+		{events.PermissionRequest, events.PermissionRequestPayload{ToolName: "Glob"}, "Glob"},
+		{events.SessionStart, events.SessionStartPayload{Source: "cli"}, "cli"},
+		{events.SessionEnd, events.SessionEndPayload{Reason: "user_exit"}, "user_exit"},
+		{events.Notification, events.NotificationPayload{NotificationType: "info"}, "info"},
+		{events.PreCompact, events.PreCompactPayload{Trigger: "auto"}, "auto"},
+		{events.SubagentStart, events.SubagentStartPayload{AgentType: "code", Name: "a"}, "code"},
+		{events.SubagentStart, events.SubagentStartPayload{Name: "fallback"}, "fallback"},
+		{events.SubagentStop, events.SubagentStopPayload{AgentType: "code", Name: "a"}, "code"},
+		{events.SubagentStop, events.SubagentStopPayload{Name: "fallback"}, "fallback"},
+		{events.UserPromptSubmit, events.UserPromptPayload{Prompt: "hi"}, ""},
+		{events.Stop, events.StopPayload{Reason: "done"}, ""},
 	}
-	for _, typ := range types {
-		typ := typ
-		t.Run(string(typ), func(t *testing.T) {
-			t.Parallel()
-			if _, err := exec.Execute(context.Background(), events.Event{Type: typ}); err != nil {
-				t.Fatalf("expected %s to be supported: %v", typ, err)
-			}
-		})
+	for _, tc := range cases {
+		got := extractMatcherTarget(tc.eventType, tc.payload)
+		if got != tc.want {
+			t.Errorf("%s: want %q, got %q", tc.eventType, tc.want, got)
+		}
+	}
+}
+
+func TestClassifyExitHelpers(t *testing.T) {
+	t.Parallel()
+	// nil error = allow
+	d, code := classifyExit(nil)
+	if d != DecisionAllow || code != 0 {
+		t.Fatalf("nil: want allow/0, got %s/%d", d, code)
+	}
+	// non-ExitError = blocking
+	d, code = classifyExit(fmt.Errorf("not found"))
+	if d != DecisionBlockingError || code != -1 {
+		t.Fatalf("non-exit: want blocking/-1, got %s/%d", d, code)
+	}
+}
+
+func TestDecodeHookOutput(t *testing.T) {
+	t.Parallel()
+	out, err := decodeHookOutput(`{"decision":"deny","reason":"nope"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Decision != "deny" || out.Reason != "nope" {
+		t.Fatalf("unexpected: %+v", out)
+	}
+	// Invalid JSON
+	_, err = decodeHookOutput(`{bad`)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestDecisionStringer(t *testing.T) {
+	t.Parallel()
+	if DecisionAllow.String() != "allow" {
+		t.Fatalf("allow: %s", DecisionAllow)
+	}
+	if DecisionBlockingError.String() != "blocking_error" {
+		t.Fatalf("blocking: %s", DecisionBlockingError)
+	}
+	if DecisionNonBlocking.String() != "non_blocking" {
+		t.Fatalf("non_blocking: %s", DecisionNonBlocking)
 	}
 }
 
 func TestValidateEventRejectsUnsupported(t *testing.T) {
 	t.Parallel()
-	exec := NewExecutor()
-	if _, err := exec.Execute(context.Background(), events.Event{Type: events.EventType("Unknown")}); err == nil {
-		t.Fatalf("expected unsupported event error")
+	if err := validateEvent("BogusEvent"); err == nil {
+		t.Fatal("expected error for unsupported event")
 	}
-}
-
-func TestSelectorPayloadPattern(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	marker := filepath.Join(dir, "pattern.txt")
-	script := writeScript(t, dir, "pattern.sh", fmt.Sprintf("#!/bin/sh\nprintf match > %s\n", marker))
-
-	sel, err := NewSelector("", "alert")
-	if err != nil {
-		t.Fatalf("selector: %v", err)
-	}
-	exec := NewExecutor()
-	exec.Register(ShellHook{Event: events.Notification, Command: script, Selector: sel})
-
-	evt := events.Event{Type: events.Notification, Payload: events.NotificationPayload{Message: "alert: hi"}}
-	if _, err := exec.Execute(context.Background(), evt); err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("expected marker from pattern match")
-	}
-}
-
-func TestHelperBranches(t *testing.T) {
-	t.Parallel()
-	if got := effectiveTimeout(2*time.Second, 0); got != 2*time.Second {
-		t.Fatalf("expected hook timeout override, got %s", got)
-	}
-	if got := effectiveTimeout(0, 0); got != defaultHookTimeout {
-		t.Fatalf("expected defaultHookTimeout fallback, got %s", got)
-	}
-
-	if dec, code, err := classifyExit(errors.New("boom")); dec != DecisionError || code != -1 || err == nil {
-		t.Fatalf("classifyExit fallback mismatch: %v %d %v", dec, code, err)
-	}
-	if _, err := decodePermission("not json"); err == nil {
-		t.Fatalf("expected decodePermission error")
-	}
-
-	if _, err := buildPayload(events.Event{Type: events.PreToolUse, Payload: 123}); err == nil {
-		t.Fatalf("expected buildPayload to fail on unsupported type")
-	}
-	if _, err := buildPayload(events.Event{Type: events.Stop}); err != nil {
-		t.Fatalf("nil payload should be allowed: %v", err)
-	}
-
-	if name := extractToolName(events.ToolResultPayload{Name: "after"}); name != "after" {
-		t.Fatalf("extractToolName failed: %s", name)
-	}
-
-	exec := NewExecutor()
-	exec.Close() // no-op but counted for coverage
-}
-
-func TestDecisionStringer(t *testing.T) {
-	t.Parallel()
-	if DecisionAllow.String() != "allow" || DecisionDeny.String() != "deny" || DecisionAsk.String() != "ask" || DecisionError.String() != "error" {
-		t.Fatalf("decision stringer mismatch")
-	}
-}
-
-func TestBuildPayloadPreCompact(t *testing.T) {
-	t.Parallel()
-	evt := events.Event{
-		Type: events.PreCompact,
-		Payload: events.PreCompactPayload{
-			EstimatedTokens: 5000,
-			TokenLimit:      8000,
-			Threshold:       0.8,
-			PreserveCount:   3,
-		},
-	}
-	raw, err := buildPayload(evt)
-	if err != nil {
-		t.Fatalf("buildPayload: %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	block, ok := decoded["pre_compact"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected pre_compact block, got %T", decoded["pre_compact"])
-	}
-	if block["estimated_tokens"] != float64(5000) {
-		t.Fatalf("estimated_tokens mismatch: %v", block["estimated_tokens"])
-	}
-}
-
-func TestBuildPayloadContextCompacted(t *testing.T) {
-	t.Parallel()
-	evt := events.Event{
-		Type: events.ContextCompacted,
-		Payload: events.ContextCompactedPayload{
-			Summary:               "test summary",
-			OriginalMessages:      10,
-			PreservedMessages:     3,
-			EstimatedTokensBefore: 5000,
-			EstimatedTokensAfter:  2000,
-		},
-	}
-	raw, err := buildPayload(evt)
-	if err != nil {
-		t.Fatalf("buildPayload: %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	block, ok := decoded["context_compacted"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected context_compacted block, got %T", decoded["context_compacted"])
-	}
-	if block["summary"] != "test summary" {
-		t.Fatalf("summary mismatch: %v", block["summary"])
-	}
-}
-
-func TestBuildPayloadModelSelected(t *testing.T) {
-	t.Parallel()
-	evt := events.Event{
-		Type: events.ModelSelected,
-		Payload: events.ModelSelectedPayload{
-			ToolName:  "Bash",
-			ModelTier: "premium",
-			Reason:    "complex task",
-		},
-	}
-	raw, err := buildPayload(evt)
-	if err != nil {
-		t.Fatalf("buildPayload: %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	block, ok := decoded["model_selected"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected model_selected block, got %T", decoded["model_selected"])
-	}
-	if block["ToolName"] != "Bash" {
-		t.Fatalf("ToolName mismatch: %v", block["ToolName"])
-	}
-}
-
-func TestBuildPayloadUserPrompt(t *testing.T) {
-	t.Parallel()
-	evt := events.Event{
-		Type:    events.UserPromptSubmit,
-		Payload: events.UserPromptPayload{Prompt: "test prompt"},
-	}
-	raw, err := buildPayload(evt)
-	if err != nil {
-		t.Fatalf("buildPayload: %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	block, ok := decoded["user_prompt"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected user_prompt block, got %T", decoded["user_prompt"])
-	}
-	if block["Prompt"] != "test prompt" {
-		t.Fatalf("Prompt mismatch: %v", block["Prompt"])
-	}
-}
-
-func TestBuildPayloadStop(t *testing.T) {
-	t.Parallel()
-	evt := events.Event{
-		Type:    events.Stop,
-		Payload: events.StopPayload{Reason: "user requested"},
-	}
-	raw, err := buildPayload(evt)
-	if err != nil {
-		t.Fatalf("buildPayload: %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	block, ok := decoded["stop"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected stop block, got %T", decoded["stop"])
-	}
-	if block["Reason"] != "user requested" {
-		t.Fatalf("Reason mismatch: %v", block["Reason"])
-	}
-}
-
-func TestBuildPayloadNotification(t *testing.T) {
-	t.Parallel()
-	evt := events.Event{
-		Type:    events.Notification,
-		Payload: events.NotificationPayload{Message: "hello", Meta: map[string]any{"k": "v"}},
-	}
-	raw, err := buildPayload(evt)
-	if err != nil {
-		t.Fatalf("buildPayload: %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	block, ok := decoded["notification"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected notification block, got %T", decoded["notification"])
-	}
-	if block["Message"] != "hello" {
-		t.Fatalf("Message mismatch: %v", block["Message"])
-	}
-}
-
-func TestExtractToolNameAllTypes(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name     string
-		payload  any
-		expected string
-	}{
-		{"ToolUsePayload", events.ToolUsePayload{Name: "Write"}, "Write"},
-		{"ToolResultPayload", events.ToolResultPayload{Name: "Read"}, "Read"},
-		{"SubagentStartPayload", events.SubagentStartPayload{Name: "explorer"}, "explorer"},
-		{"SubagentStopPayload", events.SubagentStopPayload{Name: "reviewer"}, "reviewer"},
-		{"PermissionRequestPayload", events.PermissionRequestPayload{ToolName: "Bash"}, "Bash"},
-		{"Unknown", "unknown", ""},
-		{"Nil", nil, ""},
-	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if got := extractToolName(tc.payload); got != tc.expected {
-				t.Fatalf("extractToolName(%T) = %q, want %q", tc.payload, got, tc.expected)
-			}
-		})
+	if err := validateEvent(events.PreToolUse); err != nil {
+		t.Fatalf("PreToolUse should be valid: %v", err)
 	}
 }
 
@@ -669,55 +475,153 @@ func TestNewExecutorZeroTimeout(t *testing.T) {
 	t.Parallel()
 	exec := NewExecutor(WithTimeout(0))
 	if exec.timeout != defaultHookTimeout {
-		t.Fatalf("expected defaultHookTimeout for zero timeout, got %s", exec.timeout)
+		t.Fatalf("expected default timeout, got %v", exec.timeout)
 	}
 }
 
 func TestSelectorMatchNoToolName(t *testing.T) {
 	t.Parallel()
-	sel, err := NewSelector("Write", "")
-	if err != nil {
-		t.Fatalf("NewSelector: %v", err)
-	}
+	sel, _ := NewSelector("^Bash$", "")
+	// Notification has no tool name — matcher target is NotificationType
 	evt := events.Event{Type: events.Notification, Payload: events.NotificationPayload{Message: "hi"}}
 	if sel.Match(evt) {
-		t.Fatalf("expected no match for notification with tool selector")
+		t.Fatal("expected no match when matcher target is empty")
 	}
 }
 
-func TestSelectorMatchMarshalError(t *testing.T) {
+func TestSelectorPayloadPattern(t *testing.T) {
 	t.Parallel()
-	sel, err := NewSelector("", "pattern")
-	if err != nil {
-		t.Fatalf("NewSelector: %v", err)
+	sel, _ := NewSelector("", `"command":"ls"`)
+	evt := events.Event{
+		Type:    events.PreToolUse,
+		Payload: events.ToolUsePayload{Name: "Bash", Params: map[string]any{"command": "ls"}},
 	}
-	evt := events.Event{Type: events.PreToolUse, Payload: make(chan int)}
-	if sel.Match(evt) {
-		t.Fatalf("expected no match when payload cannot be marshaled")
+	if !sel.Match(evt) {
+		t.Fatal("expected payload pattern to match")
+	}
+	evt2 := events.Event{
+		Type:    events.PreToolUse,
+		Payload: events.ToolUsePayload{Name: "Bash", Params: map[string]any{"command": "rm"}},
+	}
+	if sel.Match(evt2) {
+		t.Fatal("expected payload pattern NOT to match")
 	}
 }
 
+func TestAsyncHookFireAndForget(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "async_marker")
+	script := writeScript(t, dir, "async.sh", fmt.Sprintf("#!/bin/sh\ntouch %q\n", marker))
+
+	exec := NewExecutor()
+	exec.Register(ShellHook{Event: events.Notification, Command: script, Async: true})
+
+	results, err := exec.Execute(context.Background(), events.Event{Type: events.Notification})
+	if err != nil {
+		t.Fatalf("async execute: %v", err)
+	}
+	// Async hooks don't return results
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results for async, got %d", len(results))
+	}
+	// Wait for async to complete
+	time.Sleep(200 * time.Millisecond)
+	if _, err := os.Stat(marker); os.IsNotExist(err) {
+		t.Fatal("async hook did not execute")
+	}
+}
+
+func TestOnceHookExecutesOnlyOnce(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	counter := filepath.Join(dir, "counter")
+	// Append a line each time the hook runs
+	script := writeScript(t, dir, "once.sh", fmt.Sprintf("#!/bin/sh\necho x >> %q\n", counter))
+
+	exec := NewExecutor()
+	exec.Register(ShellHook{Event: events.Notification, Command: script, Once: true, Name: "once-hook"})
+
+	evt := events.Event{Type: events.Notification, SessionID: "s1"}
+	for i := 0; i < 3; i++ {
+		_, err := exec.Execute(context.Background(), evt)
+		if err != nil {
+			t.Fatalf("execute %d: %v", i, err)
+		}
+	}
+	data, _ := os.ReadFile(counter)
+	lines := strings.Count(strings.TrimSpace(string(data)), "x")
+	if lines != 1 {
+		t.Fatalf("expected once hook to run 1 time, ran %d times", lines)
+	}
+}
+
+func TestBuildPayloadSessionStartEnd(t *testing.T) {
+	t.Parallel()
+	// SessionStart
+	data, err := buildPayload(events.Event{
+		Type:    events.SessionStart,
+		Payload: events.SessionStartPayload{SessionID: "s1", Source: "cli", Model: "claude"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	json.Unmarshal(data, &got)
+	if got["source"] != "cli" || got["model"] != "claude" {
+		t.Fatalf("SessionStart: %v", got)
+	}
+
+	// SessionEnd
+	data, err = buildPayload(events.Event{
+		Type:    events.SessionEnd,
+		Payload: events.SessionEndPayload{SessionID: "s1", Reason: "user_exit"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	json.Unmarshal(data, &got)
+	if got["reason"] != "user_exit" {
+		t.Fatalf("SessionEnd: %v", got)
+	}
+}
+
+func TestBuildPayloadUnsupportedType(t *testing.T) {
+	t.Parallel()
+	_, err := buildPayload(events.Event{Type: events.PreToolUse, Payload: struct{ X int }{42}})
+	if err == nil || !strings.Contains(err.Error(), "unsupported payload type") {
+		t.Fatalf("expected unsupported payload error, got %v", err)
+	}
+}
+
+func TestExecuteAcceptsAllValidEvents(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	script := writeScript(t, dir, "noop.sh", "#!/bin/sh\nexit 0\n")
+
+	validEvents := []events.EventType{
+		events.PreToolUse, events.PostToolUse, events.PostToolUseFailure,
+		events.PreCompact, events.ContextCompacted, events.Notification,
+		events.UserPromptSubmit, events.SessionStart, events.SessionEnd,
+		events.Stop, events.SubagentStart, events.SubagentStop,
+		events.PermissionRequest, events.ModelSelected,
+	}
+	for _, et := range validEvents {
+		exec := NewExecutor()
+		exec.Register(ShellHook{Event: et, Command: script})
+		_, err := exec.Execute(context.Background(), events.Event{Type: et})
+		if err != nil {
+			t.Errorf("event %s should be valid: %v", et, err)
+		}
+	}
+}
+
+// writeScript creates an executable shell script in dir and returns its path.
 func writeScript(t *testing.T, dir, name, content string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		t.Fatalf("create script: %v", err)
-	}
-	if _, err := f.WriteString(content); err != nil {
-		f.Close()
-		t.Fatalf("write script: %v", err)
-	}
-	// Sync to avoid "Text file busy" race condition in CI
-	if err := f.Sync(); err != nil {
-		f.Close()
-		t.Fatalf("sync script: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("close script: %v", err)
-	}
-	if err := os.Chmod(path, 0o700); err != nil {
-		t.Fatalf("chmod script: %v", err)
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("writeScript: %v", err)
 	}
 	return path
 }

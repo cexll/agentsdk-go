@@ -15,8 +15,9 @@ import (
 func TestPreToolUseAllowsInputModification(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	// Exit 0 with JSON containing hookSpecificOutput.updatedInput
 	script := writeScript(t, dir, "modify.sh", `#!/bin/sh
-printf '{"tool_input":{"name":"Echo","params":{"k":"v2"}}}'
+printf '{"hookSpecificOutput":{"updatedInput":{"k":"v2"}}}'
 `)
 
 	exec := corehooks.NewExecutor()
@@ -37,12 +38,14 @@ printf '{"tool_input":{"name":"Echo","params":{"k":"v2"}}}'
 
 func TestPreToolUseDeniesExecution(t *testing.T) {
 	t.Parallel()
+	dir := t.TempDir()
+	// Exit 0 with JSON decision=deny
+	script := writeScript(t, dir, "deny.sh", `#!/bin/sh
+printf '{"decision":"deny","reason":"blocked"}'
+`)
 
 	exec := corehooks.NewExecutor()
-	exec.Register(corehooks.ShellHook{
-		Event:   coreevents.PreToolUse,
-		Command: "exit 1",
-	})
+	exec.Register(corehooks.ShellHook{Event: coreevents.PreToolUse, Command: script})
 	adapter := &runtimeHookAdapter{executor: exec}
 
 	_, err := adapter.PreToolUse(context.Background(), coreevents.ToolUsePayload{
@@ -57,14 +60,36 @@ func TestPreToolUseDeniesExecution(t *testing.T) {
 	}
 }
 
-func TestPreToolUseAsksForApproval(t *testing.T) {
+func TestPreToolUseBlockingError(t *testing.T) {
 	t.Parallel()
 
+	// Exit 2 = blocking error
 	exec := corehooks.NewExecutor()
 	exec.Register(corehooks.ShellHook{
 		Event:   coreevents.PreToolUse,
-		Command: "exit 2",
+		Command: "echo blocked >&2; exit 2",
 	})
+	adapter := &runtimeHookAdapter{executor: exec}
+
+	_, err := adapter.PreToolUse(context.Background(), coreevents.ToolUsePayload{
+		Name:   "Echo",
+		Params: map[string]any{"k": "v"},
+	})
+	if err == nil {
+		t.Fatalf("expected blocking error")
+	}
+}
+
+func TestPreToolUseAsksForApproval(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// Exit 0 with JSON hookSpecificOutput.permissionDecision=ask
+	script := writeScript(t, dir, "ask.sh", `#!/bin/sh
+printf '{"hookSpecificOutput":{"permissionDecision":"ask"}}'
+`)
+
+	exec := corehooks.NewExecutor()
+	exec.Register(corehooks.ShellHook{Event: coreevents.PreToolUse, Command: script})
 	adapter := &runtimeHookAdapter{executor: exec}
 
 	_, err := adapter.PreToolUse(context.Background(), coreevents.ToolUsePayload{
@@ -82,23 +107,25 @@ func TestPreToolUseAsksForApproval(t *testing.T) {
 func TestPermissionRequestDecisionMapping(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name string
-		code int
-		want coreevents.PermissionDecisionType
+		name    string
+		output  string
+		want    coreevents.PermissionDecisionType
 	}{
-		{name: "allow", code: 0, want: coreevents.PermissionAllow},
-		{name: "deny", code: 1, want: coreevents.PermissionDeny},
-		{name: "ask", code: 2, want: coreevents.PermissionAsk},
+		{name: "allow", output: `{"decision":"allow"}`, want: coreevents.PermissionAllow},
+		{name: "deny", output: `{"decision":"deny"}`, want: coreevents.PermissionDeny},
+		{name: "ask", output: `{"decision":"ask"}`, want: coreevents.PermissionAsk},
 	}
 
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			dir := t.TempDir()
+			script := writeScript(t, dir, tc.name+".sh", fmt.Sprintf("#!/bin/sh\nprintf '%s'\n", tc.output))
 			exec := corehooks.NewExecutor()
 			exec.Register(corehooks.ShellHook{
 				Event:   coreevents.PermissionRequest,
-				Command: fmt.Sprintf("exit %d", tc.code),
+				Command: script,
 			})
 			adapter := &runtimeHookAdapter{executor: exec}
 			got, err := adapter.PermissionRequest(context.Background(), coreevents.PermissionRequestPayload{ToolName: "Bash"})

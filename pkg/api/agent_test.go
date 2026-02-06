@@ -238,7 +238,7 @@ func TestRuntimeHookAskUsesPermissionHandler(t *testing.T) {
 		Tools:       []tool.Tool{toolImpl},
 		TypedHooks: []corehooks.ShellHook{{
 			Event:   coreevents.PreToolUse,
-			Command: "exit 2",
+			Command: `printf '{"hookSpecificOutput":{"permissionDecision":"ask"}}'`,
 		}},
 		PermissionRequestHandler: func(context.Context, PermissionRequest) (coreevents.PermissionDecisionType, error) {
 			called++
@@ -276,7 +276,7 @@ func TestRuntimeHookAskDeniedByPermissionHandler(t *testing.T) {
 		Tools:       []tool.Tool{toolImpl},
 		TypedHooks: []corehooks.ShellHook{{
 			Event:   coreevents.PreToolUse,
-			Command: "exit 2",
+			Command: `printf '{"hookSpecificOutput":{"permissionDecision":"ask"}}'`,
 		}},
 		PermissionRequestHandler: func(context.Context, PermissionRequest) (coreevents.PermissionDecisionType, error) {
 			return coreevents.PermissionDeny, nil
@@ -364,7 +364,7 @@ func TestRuntimeToolExecutor_PreToolUseDenialAddsToolResult(t *testing.T) {
 	hookExec := corehooks.NewExecutor()
 	hookExec.Register(corehooks.ShellHook{
 		Event:   coreevents.PreToolUse,
-		Command: "exit 1",
+		Command: `printf '{"decision":"deny"}'`,
 	})
 
 	history := message.NewHistory()

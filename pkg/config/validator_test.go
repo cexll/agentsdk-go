@@ -25,8 +25,12 @@ func TestValidateSettingsSuccess(t *testing.T) {
 			Deny:        []string{"Glob(**/*)"},
 		},
 		Hooks: &HooksConfig{
-			PreToolUse:  map[string]string{"bash": "echo pre"},
-			PostToolUse: map[string]string{"file_read": "echo post"},
+			PreToolUse: []HookMatcherEntry{
+				{Matcher: "bash", Hooks: []HookDefinition{{Type: "command", Command: "echo pre"}}},
+			},
+			PostToolUse: []HookMatcherEntry{
+				{Matcher: "file_read", Hooks: []HookDefinition{{Type: "command", Command: "echo post"}}},
+			},
 		},
 		Sandbox: &SandboxConfig{
 			ExcludedCommands: []string{"shutdown", "reboot"},
@@ -73,7 +77,10 @@ func TestValidateSettingsAggregatesErrors(t *testing.T) {
 			Allow:       []string{"tool()"},
 		},
 		Hooks: &HooksConfig{
-			PreToolUse: map[string]string{"bad[": "", "bash": ""},
+			PreToolUse: []HookMatcherEntry{
+				{Matcher: "bad[", Hooks: []HookDefinition{{Type: "command"}}},
+				{Matcher: "bash", Hooks: []HookDefinition{{Type: "command"}}},
+			},
 		},
 		Sandbox: &SandboxConfig{
 			ExcludedCommands: []string{"", "  "},
@@ -92,7 +99,7 @@ func TestValidateSettingsAggregatesErrors(t *testing.T) {
 	require.Contains(t, msg, "model is required")
 	require.Contains(t, msg, "permissions.defaultMode")
 	require.Contains(t, msg, "permissions.allow[0]")
-	require.Contains(t, msg, "hooks.preToolUse")
+	require.Contains(t, msg, "hooks.PreToolUse")
 	require.Contains(t, msg, "sandbox.network.httpProxyPort")
 	require.Contains(t, msg, "sandbox.network.socksProxyPort")
 	require.Contains(t, msg, "sandbox.excludedCommands[0]")
@@ -141,20 +148,22 @@ func TestValidatePermissionsConfig_DisableAndDirs(t *testing.T) {
 
 func TestValidateHooksConfig_EmptyCommand(t *testing.T) {
 	errs := validateHooksConfig(&HooksConfig{
-		PreToolUse: map[string]string{"bash": ""},
+		PreToolUse: []HookMatcherEntry{
+			{Matcher: "bash", Hooks: []HookDefinition{{Type: "command"}}},
+		},
 	})
 	require.Len(t, errs, 1)
-	require.Contains(t, errs[0].Error(), "command is empty")
+	require.Contains(t, errs[0].Error(), "command is required for type")
 }
 
 func TestValidateHooksConfig_AllowsWildcardAndRegex(t *testing.T) {
 	errs := validateHooksConfig(&HooksConfig{
-		PreToolUse: map[string]string{
-			"*":                   "echo any",
-			"^file_(read|write)$": "echo file",
+		PreToolUse: []HookMatcherEntry{
+			{Matcher: "*", Hooks: []HookDefinition{{Type: "command", Command: "echo any"}}},
+			{Matcher: "^file_(read|write)$", Hooks: []HookDefinition{{Type: "command", Command: "echo file"}}},
 		},
-		PostToolUse: map[string]string{
-			"grep|awk": "echo post",
+		PostToolUse: []HookMatcherEntry{
+			{Matcher: "grep|awk", Hooks: []HookDefinition{{Type: "command", Command: "echo post"}}},
 		},
 	})
 	require.Empty(t, errs)
@@ -162,7 +171,9 @@ func TestValidateHooksConfig_AllowsWildcardAndRegex(t *testing.T) {
 
 func TestValidateHooksConfig_InvalidRegex(t *testing.T) {
 	errs := validateHooksConfig(&HooksConfig{
-		PreToolUse: map[string]string{"bad[": "echo"},
+		PreToolUse: []HookMatcherEntry{
+			{Matcher: "bad[", Hooks: []HookDefinition{{Type: "command", Command: "echo"}}},
+		},
 	})
 	require.Len(t, errs, 1)
 	require.Contains(t, errs[0].Error(), "not a valid regexp")

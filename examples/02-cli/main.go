@@ -72,7 +72,8 @@ func main() {
 			SessionID: *sessionID,
 		})
 		if err != nil {
-			log.Fatalf("run: %v", err)
+			fmt.Printf("\nError: %v\n\n", err)
+			continue
 		}
 		if resp.Result != nil && resp.Result.Output != "" {
 			fmt.Printf("\nAssistant> %s\n\n", resp.Result.Output)

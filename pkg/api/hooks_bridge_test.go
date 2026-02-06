@@ -8,10 +8,10 @@ import (
 )
 
 func TestBuildSettingsHooksNil(t *testing.T) {
-	if hooks := buildSettingsHooks(nil); len(hooks) != 0 {
+	if hooks := buildSettingsHooks(nil, ""); len(hooks) != 0 {
 		t.Fatalf("expected no hooks, got %d", len(hooks))
 	}
-	if hooks := buildSettingsHooks(&config.Settings{Hooks: &config.HooksConfig{}}); len(hooks) != 0 {
+	if hooks := buildSettingsHooks(&config.Settings{Hooks: &config.HooksConfig{}}, ""); len(hooks) != 0 {
 		t.Fatalf("expected no hooks for empty config, got %d", len(hooks))
 	}
 }
@@ -20,11 +20,11 @@ func TestBuildSettingsHooksCreatesCorrectTypes(t *testing.T) {
 	settings := &config.Settings{
 		Env: map[string]string{"KEY": "value"},
 		Hooks: &config.HooksConfig{
-			PreToolUse:  map[string]string{"echo": "echo pre"},
-			PostToolUse: map[string]string{"grep": "echo post"},
+			PreToolUse: []config.HookMatcherEntry{{Matcher: "echo", Hooks: []config.HookDefinition{{Type: "command", Command: "echo pre"}}}},
+			PostToolUse: []config.HookMatcherEntry{{Matcher: "grep", Hooks: []config.HookDefinition{{Type: "command", Command: "echo post"}}}},
 		},
 	}
-	hooks := buildSettingsHooks(settings)
+	hooks := buildSettingsHooks(settings, "/tmp/test")
 	if len(hooks) != 2 {
 		t.Fatalf("expected 2 hooks, got %d", len(hooks))
 	}
@@ -59,10 +59,13 @@ func TestBuildSettingsHooksCreatesCorrectTypes(t *testing.T) {
 func TestBuildSettingsHooksSkipsEmpty(t *testing.T) {
 	settings := &config.Settings{
 		Hooks: &config.HooksConfig{
-			PreToolUse: map[string]string{"echo": "", "valid": "echo ok"},
+			PreToolUse: []config.HookMatcherEntry{
+				{Matcher: "echo", Hooks: []config.HookDefinition{{Type: "command", Command: ""}}},
+				{Matcher: "valid", Hooks: []config.HookDefinition{{Type: "command", Command: "echo ok"}}},
+			},
 		},
 	}
-	hooks := buildSettingsHooks(settings)
+	hooks := buildSettingsHooks(settings, "/tmp/test")
 	if len(hooks) != 1 {
 		t.Fatalf("expected 1 hook (empty skipped), got %d", len(hooks))
 	}

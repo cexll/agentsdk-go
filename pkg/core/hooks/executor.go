@@ -17,46 +17,69 @@ import (
 	"github.com/cexll/agentsdk-go/pkg/core/middleware"
 )
 
-// defaultHookTimeout mirrors Claude Code's documented 30s hook budget.
-const defaultHookTimeout = 30 * time.Second
+// Default timeouts per Claude Code spec.
+const (
+	defaultCommandTimeout = 600 * time.Second
+	defaultPromptTimeout  = 30 * time.Second
+	defaultAgentTimeout   = 60 * time.Second
+	defaultHookTimeout    = defaultCommandTimeout
+)
 
 // Decision captures the permission outcome encoded in the hook exit code.
+// Claude Code spec: 0=success(parse JSON), 2=blocking error(stderr),
+// other=non-blocking(log stderr & continue).
 type Decision int
 
 const (
-	DecisionAllow Decision = iota
-	DecisionDeny
-	DecisionAsk
-	DecisionError
+	DecisionAllow         Decision = iota // exit 0: success, parse JSON stdout
+	DecisionBlockingError                 // exit 2: blocking error, stderr is message
+	DecisionNonBlocking                   // exit 1,3+: non-blocking, log & continue
 )
 
 func (d Decision) String() string {
 	switch d {
 	case DecisionAllow:
 		return "allow"
-	case DecisionDeny:
-		return "deny"
-	case DecisionAsk:
-		return "ask"
+	case DecisionBlockingError:
+		return "blocking_error"
 	default:
-		return "error"
+		return "non_blocking"
 	}
 }
 
-// PermissionDecision holds the parsed stdout JSON emitted by PreToolUse hooks.
-type PermissionDecision map[string]any
+// HookOutput is the structured JSON output from hooks on exit 0.
+type HookOutput struct {
+	Continue    *bool  `json:"continue,omitempty"`
+	StopReason  string `json:"stopReason,omitempty"`
+	Decision    string `json:"decision,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	SystemMessage string `json:"systemMessage,omitempty"`
+
+	HookSpecificOutput *HookSpecificOutput `json:"hookSpecificOutput,omitempty"`
+}
+
+// HookSpecificOutput carries event-specific fields from hook JSON output.
+type HookSpecificOutput struct {
+	HookEventName string `json:"hookEventName,omitempty"`
+
+	// PreToolUse specific
+	PermissionDecision       string         `json:"permissionDecision,omitempty"`
+	PermissionDecisionReason string         `json:"permissionDecisionReason,omitempty"`
+	UpdatedInput             map[string]any `json:"updatedInput,omitempty"`
+	AdditionalContext        string         `json:"additionalContext,omitempty"`
+}
 
 // Result captures the full outcome of executing a shell hook.
 type Result struct {
-	Event      events.Event
-	Decision   Decision
-	ExitCode   int
-	Permission PermissionDecision
-	Stdout     string
-	Stderr     string
+	Event    events.Event
+	Decision Decision
+	ExitCode int
+	Output   *HookOutput // parsed JSON stdout on exit 0
+	Stdout   string
+	Stderr   string
 }
 
-// Selector filters hooks by tool name and/or payload pattern.
+// Selector filters hooks by matcher target and/or payload pattern.
 type Selector struct {
 	ToolName *regexp.Regexp
 	Pattern  *regexp.Regexp
@@ -85,8 +108,8 @@ func NewSelector(toolPattern, payloadPattern string) (Selector, error) {
 // Match returns true when the event satisfies all configured selectors.
 func (s Selector) Match(evt events.Event) bool {
 	if s.ToolName != nil {
-		name := extractToolName(evt.Payload)
-		if name == "" || !s.ToolName.MatchString(name) {
+		target := extractMatcherTarget(evt.Type, evt.Payload)
+		if target == "" || !s.ToolName.MatchString(target) {
 			return false
 		}
 	}
@@ -104,12 +127,15 @@ func (s Selector) Match(evt events.Event) bool {
 
 // ShellHook describes a single shell command bound to an event type.
 type ShellHook struct {
-	Event    events.EventType
-	Command  string
-	Selector Selector
-	Timeout  time.Duration
-	Env      map[string]string
-	Name     string // optional label for debugging
+	Event         events.EventType
+	Command       string
+	Selector      Selector
+	Timeout       time.Duration
+	Env           map[string]string
+	Name          string // optional label for debugging
+	Async         bool   // fire-and-forget execution
+	Once          bool   // execute only once per session
+	StatusMessage string // status message shown during execution
 }
 
 // Executor executes hooks by spawning shell commands with JSON stdin payloads.
@@ -123,6 +149,9 @@ type Executor struct {
 	workDir string
 
 	defaultCommand string
+
+	// onceTracker tracks which Once hooks have already executed per session.
+	onceTracker sync.Map // key: "sessionID:hookName" -> struct{}
 }
 
 // ExecutorOption configures optional behaviour.
@@ -230,6 +259,25 @@ func (e *Executor) runHooks(ctx context.Context, evt events.Event) ([]Result, er
 
 	results := make([]Result, 0, len(hooks))
 	for _, hook := range hooks {
+		// Check Once constraint
+		if hook.Once && hook.Name != "" {
+			key := evt.SessionID + ":" + hook.Name
+			if _, loaded := e.onceTracker.LoadOrStore(key, struct{}{}); loaded {
+				continue
+			}
+		}
+
+		// Async hooks: fire-and-forget
+		if hook.Async {
+			go func(h ShellHook, p []byte, ev events.Event) {
+				_, err := e.executeHook(context.Background(), h, p, ev)
+				if err != nil {
+					e.report(ev.Type, err)
+				}
+			}(hook, payload, evt)
+			continue
+		}
+
 		res, err := e.executeHook(ctx, hook, payload, evt)
 		if err != nil {
 			e.report(evt.Type, err)
@@ -301,22 +349,30 @@ func (e *Executor) executeHook(ctx context.Context, hook ShellHook, payload []by
 		return res, fmt.Errorf("hooks: command timed out after %s: %s", deadline, errStr)
 	}
 
-	decision, exitCode, failure := classifyExit(err)
+	decision, exitCode := classifyExit(err)
 	res.Decision = decision
 	res.ExitCode = exitCode
 	res.Stdout = outStr
 	res.Stderr = errStr
 
-	if failure != nil {
-		return res, fmt.Errorf("hooks: %w; stderr: %s", failure, errStr)
-	}
-
-	if evt.Type == events.PreToolUse && strings.TrimSpace(outStr) != "" {
-		permission, err := decodePermission(outStr)
-		if err != nil {
-			return res, err
+	switch decision {
+	case DecisionAllow:
+		// Exit 0: parse JSON stdout if present
+		if trimmed := strings.TrimSpace(outStr); trimmed != "" {
+			output, parseErr := decodeHookOutput(trimmed)
+			if parseErr != nil {
+				return res, parseErr
+			}
+			res.Output = output
 		}
-		res.Permission = permission
+	case DecisionBlockingError:
+		// Exit 2: blocking error, stderr is the error message
+		return res, fmt.Errorf("hooks: blocking error: %s", errStr)
+	case DecisionNonBlocking:
+		// Exit 1, 3+: non-blocking, log stderr and continue
+		if errStr != "" {
+			e.report(evt.Type, fmt.Errorf("hooks: non-blocking (exit %d): %s", exitCode, errStr))
+		}
 	}
 
 	return res, nil
@@ -332,34 +388,34 @@ func effectiveTimeout(hookTimeout, defaultTimeout time.Duration) time.Duration {
 	return defaultHookTimeout
 }
 
-func classifyExit(runErr error) (Decision, int, error) {
+// classifyExit maps process exit codes to Decision per Claude Code spec.
+// 0 = success (parse JSON), 2 = blocking error, other = non-blocking.
+func classifyExit(runErr error) (Decision, int) {
 	if runErr == nil {
-		return DecisionAllow, 0, nil
+		return DecisionAllow, 0
 	}
 	var exitErr *exec.ExitError
 	if errors.As(runErr, &exitErr) {
 		code := exitErr.ExitCode()
 		switch code {
 		case 0:
-			return DecisionAllow, code, nil
-		case 1:
-			return DecisionDeny, code, nil
+			return DecisionAllow, code
 		case 2:
-			return DecisionAsk, code, nil
+			return DecisionBlockingError, code
 		default:
-			return DecisionError, code, fmt.Errorf("command exited with code %d", code)
+			return DecisionNonBlocking, code
 		}
 	}
-	return DecisionError, -1, runErr
+	// Non-exit errors (e.g., command not found) are blocking.
+	return DecisionBlockingError, -1
 }
 
-func decodePermission(out string) (PermissionDecision, error) {
-	var parsed PermissionDecision
-	trimmed := strings.TrimSpace(out)
-	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
-		return nil, fmt.Errorf("hooks: decode permissionDecision: %w", err)
+func decodeHookOutput(out string) (*HookOutput, error) {
+	var parsed HookOutput
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		return nil, fmt.Errorf("hooks: decode hook output: %w", err)
 	}
-	return parsed, nil
+	return &parsed, nil
 }
 
 func buildPayload(evt events.Event) ([]byte, error) {
@@ -370,29 +426,129 @@ func buildPayload(evt events.Event) ([]byte, error) {
 		envelope["session_id"] = evt.SessionID
 	}
 
+	// Flatten payload fields into envelope per Claude Code spec.
 	switch p := evt.Payload.(type) {
 	case events.ToolUsePayload:
-		envelope["tool_input"] = sanitizedToolInput(p)
+		envelope["tool_name"] = p.Name
+		envelope["tool_input"] = p.Params
+		if p.ToolUseID != "" {
+			envelope["tool_use_id"] = p.ToolUseID
+		}
 	case events.ToolResultPayload:
-		envelope["tool_response"] = sanitizedToolResult(p)
+		envelope["tool_name"] = p.Name
+		if p.Params != nil {
+			envelope["tool_input"] = p.Params
+		}
+		if p.ToolUseID != "" {
+			envelope["tool_use_id"] = p.ToolUseID
+		}
+		if p.Result != nil {
+			envelope["tool_result"] = p.Result
+		}
+		if p.Duration > 0 {
+			envelope["duration_ms"] = p.Duration.Milliseconds()
+		}
+		if p.Err != nil {
+			envelope["error"] = p.Err.Error()
+			envelope["is_error"] = true
+		}
 	case events.PreCompactPayload:
-		envelope["pre_compact"] = p
+		envelope["trigger"] = p.Trigger
+		if p.CustomInstructions != "" {
+			envelope["custom_instructions"] = p.CustomInstructions
+		}
+		envelope["estimated_tokens"] = p.EstimatedTokens
+		envelope["token_limit"] = p.TokenLimit
+		envelope["threshold"] = p.Threshold
+		envelope["preserve_count"] = p.PreserveCount
 	case events.ContextCompactedPayload:
 		envelope["context_compacted"] = p
 	case events.SubagentStartPayload:
-		envelope["subagent_start"] = p
+		envelope["agent_name"] = p.Name
+		if p.AgentID != "" {
+			envelope["agent_id"] = p.AgentID
+		}
+		if p.AgentType != "" {
+			envelope["agent_type"] = p.AgentType
+		}
+		if p.Metadata != nil {
+			envelope["metadata"] = p.Metadata
+		}
 	case events.SubagentStopPayload:
-		envelope["subagent_stop"] = p
+		envelope["agent_name"] = p.Name
+		if p.Reason != "" {
+			envelope["reason"] = p.Reason
+		}
+		if p.AgentID != "" {
+			envelope["agent_id"] = p.AgentID
+		}
+		if p.AgentType != "" {
+			envelope["agent_type"] = p.AgentType
+		}
+		if p.TranscriptPath != "" {
+			envelope["transcript_path"] = p.TranscriptPath
+		}
+		envelope["stop_hook_active"] = p.StopHookActive
 	case events.PermissionRequestPayload:
-		envelope["permission_request"] = p
+		envelope["tool_name"] = p.ToolName
+		if p.ToolParams != nil {
+			envelope["tool_input"] = p.ToolParams
+		}
+		if p.Reason != "" {
+			envelope["reason"] = p.Reason
+		}
+	case events.SessionStartPayload:
+		if p.SessionID != "" {
+			envelope["session_id"] = p.SessionID
+		}
+		if p.Source != "" {
+			envelope["source"] = p.Source
+		}
+		if p.Model != "" {
+			envelope["model"] = p.Model
+		}
+		if p.AgentType != "" {
+			envelope["agent_type"] = p.AgentType
+		}
+		if p.Metadata != nil {
+			envelope["metadata"] = p.Metadata
+		}
+	case events.SessionEndPayload:
+		if p.SessionID != "" {
+			envelope["session_id"] = p.SessionID
+		}
+		if p.Reason != "" {
+			envelope["reason"] = p.Reason
+		}
+		if p.Metadata != nil {
+			envelope["metadata"] = p.Metadata
+		}
 	case events.SessionPayload:
-		envelope["session"] = p
+		// Legacy compat: flatten session payload
+		if p.SessionID != "" {
+			envelope["session_id"] = p.SessionID
+		}
+		if p.Metadata != nil {
+			envelope["metadata"] = p.Metadata
+		}
 	case events.NotificationPayload:
-		envelope["notification"] = p
+		if p.Title != "" {
+			envelope["title"] = p.Title
+		}
+		envelope["message"] = p.Message
+		if p.NotificationType != "" {
+			envelope["notification_type"] = p.NotificationType
+		}
+		if p.Meta != nil {
+			envelope["metadata"] = p.Meta
+		}
 	case events.UserPromptPayload:
-		envelope["user_prompt"] = p
+		envelope["user_prompt"] = p.Prompt
 	case events.StopPayload:
-		envelope["stop"] = p
+		if p.Reason != "" {
+			envelope["reason"] = p.Reason
+		}
+		envelope["stop_hook_active"] = p.StopHookActive
 	case events.ModelSelectedPayload:
 		envelope["model_selected"] = p
 	case nil:
@@ -401,34 +557,16 @@ func buildPayload(evt events.Event) ([]byte, error) {
 		return nil, fmt.Errorf("hooks: unsupported payload type %T", evt.Payload)
 	}
 
+	// Add cwd to all payloads
+	if cwd, err := os.Getwd(); err == nil {
+		envelope["cwd"] = cwd
+	}
+
 	data, err := json.Marshal(envelope)
 	if err != nil {
 		return nil, fmt.Errorf("hooks: marshal payload: %w", err)
 	}
 	return data, nil
-}
-
-func sanitizedToolResult(p events.ToolResultPayload) map[string]any {
-	out := map[string]any{
-		"name": p.Name,
-	}
-	if p.Result != nil {
-		out["result"] = p.Result
-	}
-	if p.Duration > 0 {
-		out["duration_ms"] = p.Duration.Milliseconds()
-	}
-	if p.Err != nil {
-		out["error"] = p.Err.Error()
-	}
-	return out
-}
-
-func sanitizedToolInput(p events.ToolUsePayload) map[string]any {
-	return map[string]any{
-		"name":   p.Name,
-		"params": p.Params,
-	}
 }
 
 func mergeEnv(base []string, extra map[string]string) []string {
@@ -442,21 +580,72 @@ func mergeEnv(base []string, extra map[string]string) []string {
 	return env
 }
 
-func extractToolName(payload any) string {
-	switch p := payload.(type) {
-	case events.ToolUsePayload:
-		return p.Name
-	case events.ToolResultPayload:
-		return p.Name
-	case events.SubagentStartPayload:
-		return p.Name
-	case events.SubagentStopPayload:
-		return p.Name
-	case events.PermissionRequestPayload:
-		return p.ToolName
-	default:
+// extractMatcherTarget returns the string to match against the hook's selector
+// based on event type and payload, per Claude Code spec:
+// - PreToolUse/PostToolUse/PostToolUseFailure/PermissionRequest → tool name
+// - SessionStart → source; SessionEnd → reason
+// - Notification → notification_type; PreCompact → trigger
+// - SubagentStart/SubagentStop → agent_type (fallback to name)
+// - UserPromptSubmit/Stop → always match (return empty to skip matcher)
+func extractMatcherTarget(eventType events.EventType, payload any) string {
+	switch eventType {
+	case events.PreToolUse:
+		if p, ok := payload.(events.ToolUsePayload); ok {
+			return p.Name
+		}
+	case events.PostToolUse, events.PostToolUseFailure:
+		if p, ok := payload.(events.ToolResultPayload); ok {
+			return p.Name
+		}
+	case events.PermissionRequest:
+		if p, ok := payload.(events.PermissionRequestPayload); ok {
+			return p.ToolName
+		}
+	case events.SessionStart:
+		if p, ok := payload.(events.SessionStartPayload); ok {
+			return p.Source
+		}
+		if p, ok := payload.(events.SessionPayload); ok {
+			if src, ok := p.Metadata["source"].(string); ok {
+				return src
+			}
+		}
+	case events.SessionEnd:
+		if p, ok := payload.(events.SessionEndPayload); ok {
+			return p.Reason
+		}
+		if p, ok := payload.(events.SessionPayload); ok {
+			if reason, ok := p.Metadata["reason"].(string); ok {
+				return reason
+			}
+		}
+	case events.Notification:
+		if p, ok := payload.(events.NotificationPayload); ok {
+			return p.NotificationType
+		}
+	case events.PreCompact:
+		if p, ok := payload.(events.PreCompactPayload); ok {
+			return p.Trigger
+		}
+	case events.SubagentStart:
+		if p, ok := payload.(events.SubagentStartPayload); ok {
+			if p.AgentType != "" {
+				return p.AgentType
+			}
+			return p.Name
+		}
+	case events.SubagentStop:
+		if p, ok := payload.(events.SubagentStopPayload); ok {
+			if p.AgentType != "" {
+				return p.AgentType
+			}
+			return p.Name
+		}
+	case events.UserPromptSubmit, events.Stop:
+		// These events always match (no matcher support)
 		return ""
 	}
+	return ""
 }
 
 func validateEvent(t events.EventType) error {

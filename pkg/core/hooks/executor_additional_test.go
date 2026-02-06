@@ -15,13 +15,14 @@ func TestExecutorWithWorkDirAndClose(t *testing.T) {
 		dir = resolved
 	}
 	exec := NewExecutor(WithWorkDir(dir))
-	exec.Register(ShellHook{Event: events.Notification, Command: "pwd"})
+	// Use stderr for output since exit 0 stdout is parsed as JSON
+	exec.Register(ShellHook{Event: events.Notification, Command: "pwd >&2"})
 
 	results, err := exec.Execute(context.Background(), events.Event{Type: events.Notification})
 	if err != nil || len(results) == 0 {
 		t.Fatalf("execute failed: %v", err)
 	}
-	if got := strings.TrimSpace(results[0].Stdout); got != dir {
+	if got := strings.TrimSpace(results[0].Stderr); got != dir {
 		t.Fatalf("expected workdir %q, got %q", dir, got)
 	}
 

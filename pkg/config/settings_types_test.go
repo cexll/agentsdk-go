@@ -41,13 +41,13 @@ func TestPermissionsValidateErrors(t *testing.T) {
 
 func TestHooksValidateErrors(t *testing.T) {
 	h := &HooksConfig{
-		PreToolUse: map[string]string{
-			"bad tool": "",
+		PreToolUse: []HookMatcherEntry{
+			{Matcher: "bad[", Hooks: []HookDefinition{{Type: "command", Command: "echo"}}},
 		},
 	}
 	err := h.Validate()
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "hooks.preToolUse[bad tool]")
+	require.Contains(t, err.Error(), "hooks.PreToolUse")
 }
 
 func TestSandboxValidateErrors(t *testing.T) {

@@ -63,25 +63,31 @@ func TestMergeMCPConfig(t *testing.T) {
 
 func TestMergeHooksAndCloneHooks(t *testing.T) {
 	lower := &HooksConfig{
-		PreToolUse:        map[string]string{"a": "1"},
-		PostToolUse:       map[string]string{"b": "2"},
-		PermissionRequest: map[string]string{"p": "x"},
+		PreToolUse:        []HookMatcherEntry{{Matcher: "a", Hooks: []HookDefinition{{Type: "command", Command: "1"}}}},
+		PostToolUse:       []HookMatcherEntry{{Matcher: "b", Hooks: []HookDefinition{{Type: "command", Command: "2"}}}},
+		PermissionRequest: []HookMatcherEntry{{Matcher: "p", Hooks: []HookDefinition{{Type: "command", Command: "x"}}}},
 	}
 	higher := &HooksConfig{
-		PreToolUse:   map[string]string{"a": "9", "c": "3"},
-		SessionStart: map[string]string{"s": "1"},
+		PreToolUse:   []HookMatcherEntry{{Matcher: "c", Hooks: []HookDefinition{{Type: "command", Command: "3"}}}},
+		SessionStart: []HookMatcherEntry{{Matcher: "s", Hooks: []HookDefinition{{Type: "command", Command: "1"}}}},
 	}
 
 	out := mergeHooks(lower, higher)
 	require.NotNil(t, out)
-	require.Equal(t, "9", out.PreToolUse["a"])
-	require.Equal(t, "3", out.PreToolUse["c"])
-	require.Equal(t, "2", out.PostToolUse["b"])
-	require.Equal(t, "x", out.PermissionRequest["p"])
-	require.Equal(t, "1", out.SessionStart["s"])
+	// mergeHookEntries concatenates lower + higher
+	require.Len(t, out.PreToolUse, 2)
+	require.Equal(t, "a", out.PreToolUse[0].Matcher)
+	require.Equal(t, "c", out.PreToolUse[1].Matcher)
+	require.Len(t, out.PostToolUse, 1)
+	require.Equal(t, "b", out.PostToolUse[0].Matcher)
+	require.Len(t, out.PermissionRequest, 1)
+	require.Equal(t, "p", out.PermissionRequest[0].Matcher)
+	require.Len(t, out.SessionStart, 1)
+	require.Equal(t, "s", out.SessionStart[0].Matcher)
 
-	out.PreToolUse["a"] = "changed"
-	require.Equal(t, "1", lower.PreToolUse["a"])
+	// Mutation isolation
+	out.PreToolUse[0].Matcher = "changed"
+	require.Equal(t, "a", lower.PreToolUse[0].Matcher)
 
 	require.Nil(t, mergeHooks(nil, nil))
 	require.NotSame(t, lower, mergeHooks(lower, nil))
@@ -90,9 +96,9 @@ func TestMergeHooksAndCloneHooks(t *testing.T) {
 	cloned := cloneHooks(lower)
 	require.NotNil(t, cloned)
 	require.NotSame(t, lower, cloned)
-	require.Equal(t, lower.PreToolUse["a"], cloned.PreToolUse["a"])
-	cloned.PreToolUse["a"] = "z"
-	require.Equal(t, "1", lower.PreToolUse["a"])
+	require.Equal(t, lower.PreToolUse[0].Matcher, cloned.PreToolUse[0].Matcher)
+	cloned.PreToolUse[0].Matcher = "z"
+	require.Equal(t, "a", lower.PreToolUse[0].Matcher)
 }
 
 func TestMergeBashOutput(t *testing.T) {

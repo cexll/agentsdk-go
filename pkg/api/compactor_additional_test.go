@@ -82,7 +82,7 @@ func TestCompactor_HookDenySkips(t *testing.T) {
 	hist.Append(msgWithTokens("user", 20))
 
 	exec := corehooks.NewExecutor()
-	exec.Register(corehooks.ShellHook{Event: coreevents.PreCompact, Command: "exit 1"})
+	exec.Register(corehooks.ShellHook{Event: coreevents.PreCompact, Command: `printf '{"continue":false}'`})
 
 	comp := newCompactor("", CompactConfig{Enabled: true, Threshold: 0.1, PreserveCount: 1}, &summaryModel{content: "x"}, 10, exec)
 	_, ok, err := comp.maybeCompact(context.Background(), hist, "sess", nil)
@@ -255,7 +255,7 @@ func TestCompactor_HookAskSkips(t *testing.T) {
 	hist.Append(msgWithTokens("user", 20))
 
 	exec := corehooks.NewExecutor()
-	exec.Register(corehooks.ShellHook{Event: coreevents.PreCompact, Command: "exit 2"})
+	exec.Register(corehooks.ShellHook{Event: coreevents.PreCompact, Command: `printf '{"continue":false}'`})
 
 	comp := newCompactor("", CompactConfig{Enabled: true, Threshold: 0.1, PreserveCount: 1}, &summaryModel{content: "x"}, 10, exec)
 	_, ok, err := comp.maybeCompact(context.Background(), hist, "sess", nil)

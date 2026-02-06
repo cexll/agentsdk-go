@@ -62,29 +62,32 @@ echo '{bad'
 		t.Fatalf("expected pre tool use error")
 	}
 
+	// Exit 2 = blocking error
 	failExec := corehooks.NewExecutor()
-	failExec.Register(corehooks.ShellHook{Event: coreevents.PostToolUse, Command: "exit 3"})
+	failExec.Register(corehooks.ShellHook{Event: coreevents.PostToolUse, Command: "echo fail >&2; exit 2"})
 	failAdapter := &runtimeHookAdapter{executor: failExec}
 	if err := failAdapter.PostToolUse(context.Background(), coreevents.ToolResultPayload{Name: "Echo"}); err == nil {
 		t.Fatalf("expected post tool use error")
 	}
 
 	permExec := corehooks.NewExecutor()
-	permExec.Register(corehooks.ShellHook{Event: coreevents.PermissionRequest, Command: "nonexistent-command-xyz"})
+	permExec.Register(corehooks.ShellHook{Event: coreevents.PermissionRequest, Command: "echo perm-fail >&2; exit 2"})
 	permAdapter := &runtimeHookAdapter{executor: permExec}
 	if _, err := permAdapter.PermissionRequest(context.Background(), coreevents.PermissionRequestPayload{ToolName: "Bash"}); err == nil {
 		t.Fatalf("expected permission request error")
 	}
 
+	// Exit 2 = blocking error for UserPrompt
 	publishExec := corehooks.NewExecutor()
-	publishExec.Register(corehooks.ShellHook{Event: coreevents.UserPromptSubmit, Command: "exit 3"})
+	publishExec.Register(corehooks.ShellHook{Event: coreevents.UserPromptSubmit, Command: "echo fail >&2; exit 2"})
 	publishAdapter := &runtimeHookAdapter{executor: publishExec}
 	if err := publishAdapter.UserPrompt(context.Background(), "hi"); err == nil {
 		t.Fatalf("expected user prompt error")
 	}
 
+	// Exit 2 = blocking error for Stop
 	notifyExec := corehooks.NewExecutor()
-	notifyExec.Register(corehooks.ShellHook{Event: coreevents.Stop, Command: "exit 3"})
+	notifyExec.Register(corehooks.ShellHook{Event: coreevents.Stop, Command: "echo fail >&2; exit 2"})
 	notifyAdapter := &runtimeHookAdapter{executor: notifyExec}
 	if err := notifyAdapter.Stop(context.Background(), strings.Repeat("x", 1)); err == nil {
 		t.Fatalf("expected stop error")

@@ -7,6 +7,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// mkEntries builds []HookMatcherEntry from alternating (matcher, command) pairs.
+func mkEntries(pairs ...string) []HookMatcherEntry {
+	var entries []HookMatcherEntry
+	for i := 0; i < len(pairs); i += 2 {
+		entries = append(entries, HookMatcherEntry{
+			Matcher: pairs[i],
+			Hooks:   []HookDefinition{{Type: "command", Command: pairs[i+1]}},
+		})
+	}
+	return entries
+}
+
 func TestHooksConfig_UnmarshalJSON_ClaudeCodeFormat(t *testing.T) {
 	t.Parallel()
 
@@ -28,9 +40,13 @@ func TestHooksConfig_UnmarshalJSON_ClaudeCodeFormat(t *testing.T) {
 				]
 			}`,
 			expected: HooksConfig{
-				PreToolUse: map[string]string{},
-				PostToolUse: map[string]string{
-					"Write|Edit": "npx prettier --write",
+				PostToolUse: []HookMatcherEntry{
+					{
+						Matcher: "Write|Edit",
+						Hooks: []HookDefinition{
+							{Type: "command", Command: "npx prettier --write", Timeout: 5},
+						},
+					},
 				},
 			},
 		},
@@ -47,9 +63,13 @@ func TestHooksConfig_UnmarshalJSON_ClaudeCodeFormat(t *testing.T) {
 				]
 			}`,
 			expected: HooksConfig{
-				PreToolUse: map[string]string{},
-				PostToolUse: map[string]string{
-					"*": "npx ccm track",
+				PostToolUse: []HookMatcherEntry{
+					{
+						Matcher: "",
+						Hooks: []HookDefinition{
+							{Type: "command", Command: "npx ccm track", Timeout: 5},
+						},
+					},
 				},
 			},
 		},
@@ -80,17 +100,17 @@ func TestHooksConfig_UnmarshalJSON_ClaudeCodeFormat(t *testing.T) {
 				]
 			}`,
 			expected: HooksConfig{
-				PreToolUse: map[string]string{
-					"bash": "echo pre-bash",
-					"*":    "echo pre-all",
+				PreToolUse: []HookMatcherEntry{
+					{Matcher: "bash", Hooks: []HookDefinition{{Type: "command", Command: "echo pre-bash"}}},
+					{Matcher: "", Hooks: []HookDefinition{{Type: "command", Command: "echo pre-all"}}},
 				},
-				PostToolUse: map[string]string{
-					"Write": "echo post-write",
+				PostToolUse: []HookMatcherEntry{
+					{Matcher: "Write", Hooks: []HookDefinition{{Type: "command", Command: "echo post-write"}}},
 				},
 			},
 		},
 		{
-			name: "claude_code_format_multiple_hooks_takes_first",
+			name: "claude_code_format_multiple_hooks_preserved",
 			input: `{
 				"PostToolUse": [
 					{
@@ -103,9 +123,14 @@ func TestHooksConfig_UnmarshalJSON_ClaudeCodeFormat(t *testing.T) {
 				]
 			}`,
 			expected: HooksConfig{
-				PreToolUse: map[string]string{},
-				PostToolUse: map[string]string{
-					"tool": "first-command",
+				PostToolUse: []HookMatcherEntry{
+					{
+						Matcher: "tool",
+						Hooks: []HookDefinition{
+							{Type: "command", Command: "first-command"},
+							{Type: "command", Command: "second-command"},
+						},
+					},
 				},
 			},
 		},
@@ -120,8 +145,9 @@ func TestHooksConfig_UnmarshalJSON_ClaudeCodeFormat(t *testing.T) {
 				]
 			}`,
 			expected: HooksConfig{
-				PreToolUse:  map[string]string{},
-				PostToolUse: map[string]string{},
+				PostToolUse: []HookMatcherEntry{
+					{Matcher: "tool", Hooks: []HookDefinition{}},
+				},
 			},
 		},
 	}
@@ -153,29 +179,8 @@ func TestHooksConfig_UnmarshalJSON_SDKFormat(t *testing.T) {
 				"PostToolUse": {"bash": "echo post"}
 			}`,
 			expected: HooksConfig{
-				PreToolUse:  map[string]string{"bash": "echo pre"},
-				PostToolUse: map[string]string{"bash": "echo post"},
-			},
-		},
-		{
-			name: "sdk_format_multiple_tools",
-			input: `{
-				"PreToolUse": {
-					"bash": "echo pre-bash",
-					"Write": "echo pre-write"
-				},
-				"PostToolUse": {
-					"Read": "echo post-read"
-				}
-			}`,
-			expected: HooksConfig{
-				PreToolUse: map[string]string{
-					"bash":  "echo pre-bash",
-					"Write": "echo pre-write",
-				},
-				PostToolUse: map[string]string{
-					"Read": "echo post-read",
-				},
+				PreToolUse:  mkEntries("bash", "echo pre"),
+				PostToolUse: mkEntries("bash", "echo post"),
 			},
 		},
 		{
@@ -185,8 +190,8 @@ func TestHooksConfig_UnmarshalJSON_SDKFormat(t *testing.T) {
 				"PostToolUse": {}
 			}`,
 			expected: HooksConfig{
-				PreToolUse:  map[string]string{},
-				PostToolUse: map[string]string{},
+				PreToolUse:  nil,
+				PostToolUse: nil,
 			},
 		},
 	}
@@ -221,16 +226,16 @@ func TestHooksConfig_UnmarshalJSON_NewFields(t *testing.T) {
 	var got HooksConfig
 	err := json.Unmarshal([]byte(input), &got)
 	require.NoError(t, err)
-	require.Equal(t, map[string]string{"bash": "echo perm"}, got.PermissionRequest)
-	require.Equal(t, map[string]string{"*": "echo start"}, got.SessionStart)
-	require.Equal(t, map[string]string{"*": "echo end"}, got.SessionEnd)
-	require.Equal(t, map[string]string{"worker": "echo sa start"}, got.SubagentStart)
-	require.Equal(t, map[string]string{"worker": "echo sa stop"}, got.SubagentStop)
-	require.Equal(t, map[string]string{"*": "echo stop"}, got.Stop)
-	require.Equal(t, map[string]string{"*": "echo notify"}, got.Notification)
-	require.Equal(t, map[string]string{"*": "echo prompt"}, got.UserPromptSubmit)
-	require.Equal(t, map[string]string{"*": "echo compact"}, got.PreCompact)
-	require.Equal(t, map[string]string{"bash": "echo failure"}, got.PostToolUseFailure)
+	require.Equal(t, mkEntries("bash", "echo perm"), got.PermissionRequest)
+	require.Equal(t, mkEntries("*", "echo start"), got.SessionStart)
+	require.Equal(t, mkEntries("*", "echo end"), got.SessionEnd)
+	require.Equal(t, mkEntries("worker", "echo sa start"), got.SubagentStart)
+	require.Equal(t, mkEntries("worker", "echo sa stop"), got.SubagentStop)
+	require.Equal(t, mkEntries("*", "echo stop"), got.Stop)
+	require.Equal(t, mkEntries("*", "echo notify"), got.Notification)
+	require.Equal(t, mkEntries("*", "echo prompt"), got.UserPromptSubmit)
+	require.Equal(t, mkEntries("*", "echo compact"), got.PreCompact)
+	require.Equal(t, mkEntries("bash", "echo failure"), got.PostToolUseFailure)
 }
 
 func TestHooksConfig_UnmarshalJSON_MixedFormat(t *testing.T) {
@@ -252,12 +257,10 @@ func TestHooksConfig_UnmarshalJSON_MixedFormat(t *testing.T) {
 	err := json.Unmarshal([]byte(input), &got)
 	require.NoError(t, err)
 
-	expected := HooksConfig{
-		PreToolUse:  map[string]string{"bash": "echo claude-format"},
-		PostToolUse: map[string]string{"Write": "echo sdk-format"},
-	}
-	require.Equal(t, expected.PreToolUse, got.PreToolUse)
-	require.Equal(t, expected.PostToolUse, got.PostToolUse)
+	require.Equal(t, []HookMatcherEntry{
+		{Matcher: "bash", Hooks: []HookDefinition{{Type: "command", Command: "echo claude-format"}}},
+	}, got.PreToolUse)
+	require.Equal(t, mkEntries("Write", "echo sdk-format"), got.PostToolUse)
 }
 
 func TestHooksConfig_UnmarshalJSON_EdgeCases(t *testing.T) {
@@ -269,12 +272,9 @@ func TestHooksConfig_UnmarshalJSON_EdgeCases(t *testing.T) {
 		expected HooksConfig
 	}{
 		{
-			name:  "empty_object",
-			input: `{}`,
-			expected: HooksConfig{
-				PreToolUse:  map[string]string{},
-				PostToolUse: map[string]string{},
-			},
+			name:     "empty_object",
+			input:    `{}`,
+			expected: HooksConfig{},
 		},
 		{
 			name: "only_pre_tool_use",
@@ -282,8 +282,7 @@ func TestHooksConfig_UnmarshalJSON_EdgeCases(t *testing.T) {
 				"PreToolUse": {"bash": "echo pre"}
 			}`,
 			expected: HooksConfig{
-				PreToolUse:  map[string]string{"bash": "echo pre"},
-				PostToolUse: map[string]string{},
+				PreToolUse: mkEntries("bash", "echo pre"),
 			},
 		},
 		{
@@ -292,8 +291,7 @@ func TestHooksConfig_UnmarshalJSON_EdgeCases(t *testing.T) {
 				"PostToolUse": {"bash": "echo post"}
 			}`,
 			expected: HooksConfig{
-				PreToolUse:  map[string]string{},
-				PostToolUse: map[string]string{"bash": "echo post"},
+				PostToolUse: mkEntries("bash", "echo post"),
 			},
 		},
 		{
@@ -303,8 +301,8 @@ func TestHooksConfig_UnmarshalJSON_EdgeCases(t *testing.T) {
 				"PostToolUse": []
 			}`,
 			expected: HooksConfig{
-				PreToolUse:  map[string]string{},
-				PostToolUse: map[string]string{},
+				PreToolUse:  []HookMatcherEntry{},
+				PostToolUse: []HookMatcherEntry{},
 			},
 		},
 	}
@@ -404,70 +402,54 @@ func TestHooksConfig_UnmarshalJSON_RealWorldExample(t *testing.T) {
 	err := json.Unmarshal([]byte(input), &got)
 	require.NoError(t, err)
 
-	// Both entries have empty matcher, so they should map to "*"
-	// The second entry should overwrite the first
-	require.Equal(t, map[string]string{
-		"*": "npx claude-code-manager track",
+	// Both entries have empty matcher and should both be preserved as separate entries.
+	require.Len(t, got.PostToolUse, 2)
+	require.Equal(t, []HookMatcherEntry{
+		{
+			Matcher: "",
+			Hooks:   []HookDefinition{{Type: "command", Command: "npx ccm track", Timeout: 5}},
+		},
+		{
+			Matcher: "",
+			Hooks:   []HookDefinition{{Type: "command", Command: "npx claude-code-manager track", Timeout: 5}},
+		},
 	}, got.PostToolUse)
 }
 
-func TestConvertClaudeCodeFormat(t *testing.T) {
+func TestConvertLegacyMapFormat(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
-		input    []claudeCodeHookEntry
-		expected map[string]string
+		input    map[string]string
+		expected []HookMatcherEntry
 	}{
 		{
 			name:     "empty_input",
-			input:    []claudeCodeHookEntry{},
-			expected: map[string]string{},
+			input:    map[string]string{},
+			expected: nil,
 		},
 		{
-			name: "single_entry_with_matcher",
-			input: []claudeCodeHookEntry{
-				{
-					Matcher: "bash",
-					Hooks: []claudeCodeHook{
-						{Type: "command", Command: "echo test"},
-					},
-				},
-			},
-			expected: map[string]string{
-				"bash": "echo test",
-			},
+			name:     "single_entry",
+			input:    map[string]string{"bash": "echo test"},
+			expected: mkEntries("bash", "echo test"),
 		},
 		{
-			name: "single_entry_empty_matcher",
-			input: []claudeCodeHookEntry{
-				{
-					Matcher: "",
-					Hooks: []claudeCodeHook{
-						{Type: "command", Command: "echo all"},
-					},
-				},
-			},
-			expected: map[string]string{
-				"*": "echo all",
-			},
+			name:     "wildcard_entry",
+			input:    map[string]string{"*": "echo all"},
+			expected: mkEntries("*", "echo all"),
 		},
 		{
-			name: "entry_with_no_hooks",
-			input: []claudeCodeHookEntry{
-				{
-					Matcher: "tool",
-					Hooks:   []claudeCodeHook{},
-				},
-			},
-			expected: map[string]string{},
+			name:     "empty_command_skipped",
+			input:    map[string]string{"tool": ""},
+			expected: nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := convertClaudeCodeFormat(tt.input)
+			got := convertLegacyMapFormat(tt.input)
 			require.Equal(t, tt.expected, got)
 		})
 	}
@@ -479,23 +461,29 @@ func TestParseHookField(t *testing.T) {
 	tests := []struct {
 		name        string
 		input       string
-		expected    map[string]string
+		expected    []HookMatcherEntry
 		expectError bool
 	}{
 		{
 			name:  "array_format",
 			input: `[{"matcher": "tool", "hooks": [{"type": "command", "command": "echo test"}]}]`,
-			expected: map[string]string{
-				"tool": "echo test",
+			expected: []HookMatcherEntry{
+				{Matcher: "tool", Hooks: []HookDefinition{{Type: "command", Command: "echo test"}}},
 			},
 			expectError: false,
 		},
 		{
-			name:  "map_format",
-			input: `{"tool": "echo test"}`,
-			expected: map[string]string{
-				"tool": "echo test",
+			name:  "array_format_defaults_empty_type_to_command",
+			input: `[{"matcher": "tool", "hooks": [{"command": "echo test"}]}]`,
+			expected: []HookMatcherEntry{
+				{Matcher: "tool", Hooks: []HookDefinition{{Type: "command", Command: "echo test"}}},
 			},
+			expectError: false,
+		},
+		{
+			name:        "map_format",
+			input:       `{"tool": "echo test"}`,
+			expected:    mkEntries("tool", "echo test"),
 			expectError: false,
 		},
 		{

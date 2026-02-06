@@ -51,24 +51,29 @@ func (e Event) Validate() error {
 
 // ToolUsePayload is emitted before tool execution.
 type ToolUsePayload struct {
-	Name   string
-	Params map[string]any
+	Name      string
+	Params    map[string]any
+	ToolUseID string // unique identifier for this tool use
 }
 
 // ToolResultPayload is emitted after tool execution.
 type ToolResultPayload struct {
-	Name     string
-	Result   any
-	Duration time.Duration
-	Err      error
+	Name      string
+	Params    map[string]any // original tool input params
+	ToolUseID string         // matches the ToolUsePayload.ToolUseID
+	Result    any
+	Duration  time.Duration
+	Err       error
 }
 
 // PreCompactPayload is emitted before automatic context compaction.
 type PreCompactPayload struct {
-	EstimatedTokens int     `json:"estimated_tokens"`
-	TokenLimit      int     `json:"token_limit"`
-	Threshold       float64 `json:"threshold"`
-	PreserveCount   int     `json:"preserve_count"`
+	Trigger           string  `json:"trigger,omitempty"`
+	CustomInstructions string `json:"custom_instructions,omitempty"`
+	EstimatedTokens   int     `json:"estimated_tokens"`
+	TokenLimit        int     `json:"token_limit"`
+	Threshold         float64 `json:"threshold"`
+	PreserveCount     int     `json:"preserve_count"`
 }
 
 // ContextCompactedPayload is emitted after context compaction completes.
@@ -85,15 +90,32 @@ type UserPromptPayload struct {
 	Prompt string
 }
 
-// SessionPayload signals session lifecycle transitions.
+// SessionPayload signals session lifecycle transitions (legacy, kept for backward compat).
 type SessionPayload struct {
 	SessionID string
 	Metadata  map[string]any
 }
 
+// SessionStartPayload is emitted when a session starts.
+type SessionStartPayload struct {
+	SessionID string
+	Source    string         // entry point source (e.g., "cli", "api")
+	Model     string         // model being used
+	AgentType string         // agent type (e.g., "main", "subagent")
+	Metadata  map[string]any
+}
+
+// SessionEndPayload is emitted when a session ends.
+type SessionEndPayload struct {
+	SessionID string
+	Reason    string         // reason for ending (e.g., "user_exit", "error")
+	Metadata  map[string]any
+}
+
 // StopPayload indicates a stop notification for the main agent.
 type StopPayload struct {
-	Reason string
+	Reason         string
+	StopHookActive bool // whether a stop hook is currently active
 }
 
 // SubagentStopPayload is emitted when a subagent stops independently.
@@ -101,14 +123,17 @@ type SubagentStopPayload struct {
 	Name           string
 	Reason         string
 	AgentID        string // unique identifier for the subagent instance
+	AgentType      string // type of the subagent
 	TranscriptPath string // path to the subagent transcript file
+	StopHookActive bool   // whether a stop hook is currently active
 }
 
 // SubagentStartPayload is emitted when a subagent starts.
 type SubagentStartPayload struct {
-	Name     string
-	AgentID  string         // unique identifier for the subagent instance
-	Metadata map[string]any // optional metadata
+	Name      string
+	AgentID   string         // unique identifier for the subagent instance
+	AgentType string         // type of the subagent
+	Metadata  map[string]any // optional metadata
 }
 
 // PermissionRequestPayload is emitted when a tool requests permission.
@@ -129,8 +154,10 @@ const (
 
 // NotificationPayload transports informational messages.
 type NotificationPayload struct {
-	Message string
-	Meta    map[string]any
+	Title            string
+	Message          string
+	NotificationType string         // type of notification for matcher filtering
+	Meta             map[string]any
 }
 
 // TokenUsagePayload reports model token usage for a completed run.

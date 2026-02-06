@@ -44,26 +44,44 @@ type PermissionsConfig struct {
 	DisableBypassPermissionsMode string   `json:"disableBypassPermissionsMode,omitempty"` // Set to "disable" to forbid bypassPermissions mode.
 }
 
-// HooksConfig maps hook matchers to shell commands. For tool-related events the
-// matcher is applied to the tool name; for subagent-related events it matches
-// the subagent name. Session hooks ignore matcher values other than "*" since
-// there is no name to match.
+// HookDefinition describes a single hook action bound to a matcher entry.
+// Supports command (shell), prompt (LLM), and agent hook types per the Claude Code spec.
+type HookDefinition struct {
+	Type          string `json:"type"`                    // "command" (default), "prompt", or "agent"
+	Command       string `json:"command,omitempty"`       // Shell command (type=command)
+	Prompt        string `json:"prompt,omitempty"`        // LLM prompt (type=prompt)
+	Model         string `json:"model,omitempty"`         // Model override (type=prompt/agent)
+	Timeout       int    `json:"timeout,omitempty"`       // Per-hook timeout in seconds (0 = use default)
+	Async         bool   `json:"async,omitempty"`         // Fire-and-forget execution
+	Once          bool   `json:"once,omitempty"`          // Execute only once per session
+	StatusMessage string `json:"statusMessage,omitempty"` // Status message shown during execution
+}
+
+// HookMatcherEntry pairs a matcher pattern with one or more hook definitions.
+type HookMatcherEntry struct {
+	Matcher string           `json:"matcher"`
+	Hooks   []HookDefinition `json:"hooks"`
+}
+
+// HooksConfig maps event types to matcher entries. For tool-related events the
+// matcher is applied to the tool name; for session events it matches source/reason;
+// for notification it matches type; for subagent events it matches agent type.
 //
-// Supports both Claude Code official format (array) and SDK simplified format (map)
-// via custom UnmarshalJSON in hooks_unmarshal.go.
+// Supports both Claude Code official format (array of HookMatcherEntry) and
+// SDK simplified format (map[string]string) via custom UnmarshalJSON.
 type HooksConfig struct {
-	PreToolUse         map[string]string `json:"PreToolUse,omitempty"`         // Commands run before specific tools.
-	PostToolUse        map[string]string `json:"PostToolUse,omitempty"`        // Commands run after specific tools.
-	PostToolUseFailure map[string]string `json:"PostToolUseFailure,omitempty"` // Commands run after tool execution fails.
-	PermissionRequest  map[string]string `json:"PermissionRequest,omitempty"`  // Commands run when a tool requests permission.
-	SessionStart       map[string]string `json:"SessionStart,omitempty"`       // Commands run when a session starts.
-	SessionEnd         map[string]string `json:"SessionEnd,omitempty"`         // Commands run when a session ends.
-	SubagentStart      map[string]string `json:"SubagentStart,omitempty"`      // Commands run when a subagent starts.
-	SubagentStop       map[string]string `json:"SubagentStop,omitempty"`       // Commands run when a subagent stops.
-	Stop               map[string]string `json:"Stop,omitempty"`               // Commands run when agent stops.
-	Notification       map[string]string `json:"Notification,omitempty"`       // Commands run on notifications.
-	UserPromptSubmit   map[string]string `json:"UserPromptSubmit,omitempty"`   // Commands run when user submits a prompt.
-	PreCompact         map[string]string `json:"PreCompact,omitempty"`         // Commands run before context compaction.
+	PreToolUse         []HookMatcherEntry `json:"PreToolUse,omitempty"`
+	PostToolUse        []HookMatcherEntry `json:"PostToolUse,omitempty"`
+	PostToolUseFailure []HookMatcherEntry `json:"PostToolUseFailure,omitempty"`
+	PermissionRequest  []HookMatcherEntry `json:"PermissionRequest,omitempty"`
+	SessionStart       []HookMatcherEntry `json:"SessionStart,omitempty"`
+	SessionEnd         []HookMatcherEntry `json:"SessionEnd,omitempty"`
+	SubagentStart      []HookMatcherEntry `json:"SubagentStart,omitempty"`
+	SubagentStop       []HookMatcherEntry `json:"SubagentStop,omitempty"`
+	Stop               []HookMatcherEntry `json:"Stop,omitempty"`
+	Notification       []HookMatcherEntry `json:"Notification,omitempty"`
+	UserPromptSubmit   []HookMatcherEntry `json:"UserPromptSubmit,omitempty"`
+	PreCompact         []HookMatcherEntry `json:"PreCompact,omitempty"`
 }
 
 // SandboxConfig controls bash sandboxing.
