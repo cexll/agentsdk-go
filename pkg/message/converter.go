@@ -7,6 +7,7 @@ type Message struct {
 	Role      string
 	Content   string
 	ToolCalls []ToolCall
+	ReasoningContent string
 }
 
 // ToolCall mirrors the shape of a tool invocation produced by the assistant.
@@ -20,7 +21,7 @@ type ToolCall struct {
 // CloneMessage performs a deep clone of a model.Message, duplicating nested
 // maps to avoid mutation leaks between callers.
 func CloneMessage(msg Message) Message {
-	clone := Message{Role: msg.Role, Content: msg.Content}
+	clone := Message{Role: msg.Role, Content: msg.Content, ReasoningContent: msg.ReasoningContent}
 	clone.ToolCalls = cloneToolCalls(msg.ToolCalls)
 	return clone
 }

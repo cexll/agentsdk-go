@@ -1054,7 +1054,7 @@ func (m *conversationModel) Generate(ctx context.Context, _ *agent.Context) (*ag
 		st.Values["model.stop_reason"] = resp.StopReason
 	}
 
-	assistant := message.Message{Role: resp.Message.Role, Content: strings.TrimSpace(resp.Message.Content)}
+	assistant := message.Message{Role: resp.Message.Role, Content: strings.TrimSpace(resp.Message.Content), ReasoningContent: resp.Message.ReasoningContent}
 	if len(resp.Message.ToolCalls) > 0 {
 		assistant.ToolCalls = make([]message.ToolCall, len(resp.Message.ToolCalls))
 		for i, call := range resp.Message.ToolCalls {

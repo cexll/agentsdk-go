@@ -81,6 +81,7 @@ func convertMessages(msgs []message.Message) []model.Message {
 			Role:      msg.Role,
 			Content:   msg.Content,
 			ToolCalls: convertToolCalls(msg.ToolCalls),
+			ReasoningContent: msg.ReasoningContent,
 		})
 	}
 	return out

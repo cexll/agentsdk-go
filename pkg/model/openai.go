@@ -140,6 +140,7 @@ func (m *openaiModel) CompleteStream(ctx context.Context, req Request, cb Stream
 
 		var (
 			accumulatedContent strings.Builder
+			accumulatedReasoning strings.Builder
 			accumulatedCalls   = make(map[int]*toolCallAccumulator)
 			finalUsage         Usage
 			finishReason       string
@@ -159,6 +160,19 @@ func (m *openaiModel) CompleteStream(ctx context.Context, req Request, cb Stream
 				}
 
 				delta := choice.Delta
+
+				// Handle reasoning_content from thinking models
+				if raw := delta.RawJSON(); raw != "" {
+					var dp map[string]json.RawMessage
+					if err := json.Unmarshal([]byte(raw), &dp); err == nil {
+						if rc, ok := dp["reasoning_content"]; ok {
+							var s string
+							if json.Unmarshal(rc, &s) == nil {
+								accumulatedReasoning.WriteString(s)
+							}
+						}
+					}
+				}
 
 				// Handle text content
 				if delta.Content != "" {
@@ -216,6 +230,7 @@ func (m *openaiModel) CompleteStream(ctx context.Context, req Request, cb Stream
 				Role:      "assistant",
 				Content:   accumulatedContent.String(),
 				ToolCalls: toolCalls,
+				ReasoningContent: accumulatedReasoning.String(),
 			},
 			Usage:      finalUsage,
 			StopReason: finishReason,
@@ -409,6 +424,13 @@ func buildOpenAIAssistantMessage(msg Message) openai.ChatCompletionMessageParamU
 		assistantParam.ToolCalls = toolCalls
 	}
 
+	// Pass through reasoning_content for thinking models
+	if msg.ReasoningContent != "" {
+		assistantParam.SetExtraFields(map[string]any{
+			"reasoning_content": msg.ReasoningContent,
+		})
+	}
+
 	return openai.ChatCompletionMessageParamUnion{
 		OfAssistant: &assistantParam,
 	}
@@ -501,11 +523,22 @@ func convertOpenAIResponse(completion *openai.ChatCompletion) *Response {
 		})
 	}
 
+	var reasoningContent string
+	if raw := msg.RawJSON(); raw != "" {
+		var parsed map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+			if rc, ok := parsed["reasoning_content"]; ok {
+				_ = json.Unmarshal(rc, &reasoningContent)
+			}
+		}
+	}
+
 	return &Response{
 		Message: Message{
 			Role:      "assistant",
 			Content:   msg.Content,
 			ToolCalls: toolCalls,
+			ReasoningContent: reasoningContent,
 		},
 		Usage:      convertOpenAIUsage(completion.Usage),
 		StopReason: choice.FinishReason,
