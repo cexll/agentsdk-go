@@ -4,9 +4,9 @@ package message
 // package. It is purposefully minimal to keep the history layer independent
 // from concrete model providers.
 type Message struct {
-	Role      string
-	Content   string
-	ToolCalls []ToolCall
+	Role             string
+	Content          string
+	ToolCalls        []ToolCall
 	ReasoningContent string
 }
 

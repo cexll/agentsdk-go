@@ -139,11 +139,11 @@ func (m *openaiModel) CompleteStream(ctx context.Context, req Request, cb Stream
 		defer stream.Close()
 
 		var (
-			accumulatedContent strings.Builder
+			accumulatedContent   strings.Builder
 			accumulatedReasoning strings.Builder
-			accumulatedCalls   = make(map[int]*toolCallAccumulator)
-			finalUsage         Usage
-			finishReason       string
+			accumulatedCalls     = make(map[int]*toolCallAccumulator)
+			finalUsage           Usage
+			finishReason         string
 		)
 
 		for stream.Next() {
@@ -227,9 +227,9 @@ func (m *openaiModel) CompleteStream(ctx context.Context, req Request, cb Stream
 
 		resp := &Response{
 			Message: Message{
-				Role:      "assistant",
-				Content:   accumulatedContent.String(),
-				ToolCalls: toolCalls,
+				Role:             "assistant",
+				Content:          accumulatedContent.String(),
+				ToolCalls:        toolCalls,
 				ReasoningContent: accumulatedReasoning.String(),
 			},
 			Usage:      finalUsage,
@@ -528,16 +528,16 @@ func convertOpenAIResponse(completion *openai.ChatCompletion) *Response {
 		var parsed map[string]json.RawMessage
 		if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
 			if rc, ok := parsed["reasoning_content"]; ok {
-				_ = json.Unmarshal(rc, &reasoningContent)
+				json.Unmarshal(rc, &reasoningContent) //nolint:errcheck // best-effort extraction
 			}
 		}
 	}
 
 	return &Response{
 		Message: Message{
-			Role:      "assistant",
-			Content:   msg.Content,
-			ToolCalls: toolCalls,
+			Role:             "assistant",
+			Content:          msg.Content,
+			ToolCalls:        toolCalls,
 			ReasoningContent: reasoningContent,
 		},
 		Usage:      convertOpenAIUsage(completion.Usage),

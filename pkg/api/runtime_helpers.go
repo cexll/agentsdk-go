@@ -78,9 +78,9 @@ func convertMessages(msgs []message.Message) []model.Message {
 	out := make([]model.Message, 0, len(msgs))
 	for _, msg := range msgs {
 		out = append(out, model.Message{
-			Role:      msg.Role,
-			Content:   msg.Content,
-			ToolCalls: convertToolCalls(msg.ToolCalls),
+			Role:             msg.Role,
+			Content:          msg.Content,
+			ToolCalls:        convertToolCalls(msg.ToolCalls),
 			ReasoningContent: msg.ReasoningContent,
 		})
 	}

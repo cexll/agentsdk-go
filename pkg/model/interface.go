@@ -5,9 +5,9 @@ import "context"
 // Message represents a single conversational turn.
 // Tool calls emitted by the assistant are kept on ToolCalls.
 type Message struct {
-	Role      string
-	Content   string
-	ToolCalls []ToolCall
+	Role             string
+	Content          string
+	ToolCalls        []ToolCall
 	ReasoningContent string // For thinking models (e.g. DeepSeek, Kimi k2.5)
 }
 

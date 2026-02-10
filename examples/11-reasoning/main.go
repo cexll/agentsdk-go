@@ -2,8 +2,9 @@
 // (DeepSeek-R1, Kimi k2.5, etc.) through both OpenAI and Anthropic providers.
 //
 // Usage:
-//   DEEPSEEK_API_KEY=sk-xxx go run ./examples/11-reasoning
-//   DEEPSEEK_API_KEY=sk-xxx go run ./examples/11-reasoning --provider anthropic
+//
+//	DEEPSEEK_API_KEY=sk-xxx go run ./examples/11-reasoning
+//	DEEPSEEK_API_KEY=sk-xxx go run ./examples/11-reasoning --provider anthropic
 package main
 
 import (
