@@ -1,8 +1,9 @@
 // Package main demonstrates reasoning_content passthrough for thinking models
-// (DeepSeek-R1, Kimi k2.5, etc.) through the OpenAI-compatible provider.
+// (DeepSeek-R1, Kimi k2.5, etc.) through both OpenAI and Anthropic providers.
 //
 // Usage:
 //   DEEPSEEK_API_KEY=sk-xxx go run ./examples/11-reasoning
+//   DEEPSEEK_API_KEY=sk-xxx go run ./examples/11-reasoning --provider anthropic
 package main
 
 import (
@@ -22,18 +23,28 @@ func main() {
 		log.Fatal("DEEPSEEK_API_KEY required")
 	}
 
-	mdl, err := model.NewOpenAI(model.OpenAIConfig{
-		APIKey:    apiKey,
-		BaseURL:   "https://api.deepseek.com",
-		Model:     "deepseek-reasoner",
-		MaxTokens: 4096,
-	})
-	if err != nil {
-		log.Fatalf("create model: %v", err)
+	provider := "openai"
+	for _, arg := range os.Args[1:] {
+		if arg == "--provider" || arg == "-p" {
+			continue
+		}
+		if arg == "anthropic" || arg == "--provider=anthropic" || arg == "-p=anthropic" {
+			provider = "anthropic"
+		}
+	}
+	// Also check: --provider anthropic (two-arg form)
+	for i, arg := range os.Args[1:] {
+		if (arg == "--provider" || arg == "-p") && i+2 < len(os.Args) {
+			provider = os.Args[i+2]
+		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	mdl := createModel(apiKey, provider)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
+
+	fmt.Printf("Provider: %s\n\n", provider)
 
 	// ── Demo 1: Non-streaming ─────────────────────────────────────────
 	fmt.Println("═══════════════════════════════════════════════════")
@@ -143,5 +154,32 @@ func printBoxed(text string) {
 	lines := strings.Split(text, "\n")
 	for _, line := range lines {
 		fmt.Printf("│ %s\n", line)
+	}
+}
+
+func createModel(apiKey, provider string) model.Model {
+	switch provider {
+	case "anthropic":
+		mdl, err := model.NewAnthropic(model.AnthropicConfig{
+			APIKey:    apiKey,
+			BaseURL:   "https://api.deepseek.com/anthropic",
+			Model:     "deepseek-reasoner",
+			MaxTokens: 4096,
+		})
+		if err != nil {
+			log.Fatalf("create anthropic model: %v", err)
+		}
+		return mdl
+	default:
+		mdl, err := model.NewOpenAI(model.OpenAIConfig{
+			APIKey:    apiKey,
+			BaseURL:   "https://api.deepseek.com",
+			Model:     "deepseek-reasoner",
+			MaxTokens: 4096,
+		})
+		if err != nil {
+			log.Fatalf("create openai model: %v", err)
+		}
+		return mdl
 	}
 }

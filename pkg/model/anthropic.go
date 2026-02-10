@@ -135,6 +135,9 @@ func NewAnthropic(cfg AnthropicConfig) (Model, error) {
 		// Explicitly set the API key so it overrides any ANTHROPIC_AUTH_TOKEN
 		// or ANTHROPIC_API_KEY from the environment (DefaultClientOptions).
 		option.WithAPIKey(apiKey),
+		// Also set auth token for providers that require Authorization: Bearer
+		// (e.g. DeepSeek's Anthropic-compatible endpoint).
+		option.WithAuthToken(apiKey),
 	}
 	if cfg.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
@@ -470,6 +473,10 @@ func convertMessages(msgs []Message, enableCache bool, defaults ...string) ([]an
 
 func buildAssistantContent(msg Message) []anthropicsdk.ContentBlockParamUnion {
 	blocks := make([]anthropicsdk.ContentBlockParamUnion, 0, 1+len(msg.ToolCalls))
+	// Prepend thinking block if reasoning content is present
+	if msg.ReasoningContent != "" {
+		blocks = append(blocks, anthropicsdk.NewThinkingBlock("", msg.ReasoningContent))
+	}
 	if strings.TrimSpace(msg.Content) != "" {
 		blocks = append(blocks, anthropicsdk.NewTextBlock(msg.Content))
 	}
@@ -584,10 +591,15 @@ func encodeSchema(raw map[string]any) (anthropicsdk.ToolInputSchemaParam, error)
 
 func convertResponseMessage(msg anthropicsdk.Message) Message {
 	var textParts []string
+	var thinkingParts []string
 	var toolCalls []ToolCall
 	for _, block := range msg.Content {
 		if tc := toolCallFromBlock(block); tc != nil {
 			toolCalls = append(toolCalls, *tc)
+			continue
+		}
+		if block.Type == "thinking" && block.Thinking != "" {
+			thinkingParts = append(thinkingParts, block.Thinking)
 			continue
 		}
 		if text := block.Text; text != "" {
@@ -600,9 +612,10 @@ func convertResponseMessage(msg anthropicsdk.Message) Message {
 		role = "assistant"
 	}
 	return Message{
-		Role:      role,
-		Content:   strings.Join(textParts, ""),
-		ToolCalls: toolCalls,
+		Role:             role,
+		Content:          strings.Join(textParts, ""),
+		ToolCalls:        toolCalls,
+		ReasoningContent: strings.Join(thinkingParts, ""),
 	}
 }
 
@@ -732,5 +745,6 @@ func mapModelName(name string) anthropicsdk.Model {
 	if model, ok := modelLookup[trimmed]; ok {
 		return model
 	}
-	return defaultAnthropicModel
+	// Pass through unknown model names (e.g. deepseek-reasoner via proxy)
+	return anthropicsdk.Model(trimmed)
 }
