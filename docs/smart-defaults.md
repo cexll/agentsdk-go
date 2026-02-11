@@ -41,20 +41,16 @@ os.Setenv("AGENTSDK_PROJECT_ROOT", "/custom/path")
 
 **根据 EntryPoint 自动设置**：
 
-#### CLI 模式（宽松）
+#### 所有模式（统一默认值）
 ```go
-api.EntryPointCLI => 自动允许:
+所有 EntryPoint 自动允许:
 - localhost, 127.0.0.1, ::1
 - 0.0.0.0 (所有本机接口)
 - *.local (mDNS)
 - 192.168.*, 10.*, 172.16.* (私有网段)
 ```
 
-#### CI/Platform 模式（严格）
-```go
-api.EntryPointCI       => 空白名单（完全禁止）
-api.EntryPointPlatform => 空白名单（完全禁止）
-```
+> 注意：当前实现中 `defaultNetworkAllowList` 对所有 EntryPoint 返回相同的本地网络白名单。如需更严格的网络控制，请通过 `Sandbox.NetworkAllow` 显式覆盖。
 
 **覆盖默认值**：
 
@@ -131,7 +127,7 @@ func main() {
 | 配置项 | CLI 模式 | CI/Platform 模式 |
 |--------|----------|------------------|
 | Shell 元字符 | ✅ 允许 | ❌ 禁止 |
-| 网络访问 | ✅ 本机全网段 | ❌ 空白名单 |
+| 网络访问 | ✅ 本机全网段 | ✅ 本机全网段（同 CLI） |
 | 项目根目录 | 自动解析 | 自动解析 |
 | 危险命令 | ❌ 禁止 `rm`/`dd` 等 | ❌ 禁止 `rm`/`dd` 等 |
 

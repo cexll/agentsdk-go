@@ -5,10 +5,10 @@ This document covers the core APIs of agentsdk-go. It reflects the current imple
 ## pkg/middleware — Six-Stage Pluggable Chain
 
 - `type Stage int` enumerates six fixed hook points: `StageBeforeAgent`, `StageBeforeModel`, `StageAfterModel`, `StageBeforeTool`, `StageAfterTool`, `StageAfterAgent` (`pkg/middleware/types.go:9`). Sparse enum avoids magic numbers; adding a stage requires extending the switch in `Chain.Execute`.
-- `type State struct` (`types.go:21`) is the shared carrier across hooks. Fields like `Iteration`, `Agent`, `ModelOutput`, `ToolCall` are `any`; middleware must type-assert and avoid writing conflicting fields.
-- `type Middleware interface` (`types.go:34`) declares six hook methods. Implementers can override only the needed stages; others return `nil`.
-- `type Funcs struct` (`types.go:46`) lets you assemble middleware quickly with function pointers; missing callbacks are no-ops, `Identifier` shows in error messages—handy for tests and one-off interceptors.
-- `type Chain struct` (`chain.go:14`) is a thread-safe sequential executor. `NewChain` filters `nil`; `Use` supports runtime additions. `ChainOption` currently exposes `WithTimeout` to wrap each stage with `context.WithTimeout`.
+- `type State struct` (`types.go:20`) is the shared carrier across hooks. Fields like `Iteration`, `Agent`, `ModelInput`, `ModelOutput`, `ToolCall`, `ToolResult` are `any`; middleware must type-assert and avoid writing conflicting fields. `Values map[string]any` enables cross-middleware data sharing.
+- `type Middleware interface` (`types.go:32`) declares `Name() string` plus six hook methods (`BeforeAgent`, `BeforeModel`, `AfterModel`, `BeforeTool`, `AfterTool`, `AfterAgent`), each with signature `func(ctx context.Context, st *State) error`. Implementers can no-op individual methods when the hook is not needed.
+- `type Funcs struct` (`types.go:44`) lets you assemble middleware quickly with function pointers (`OnBeforeAgent`, `OnBeforeModel`, etc.); missing callbacks are no-ops, `Identifier` shows in error messages—handy for tests and one-off interceptors.
+- `type Chain struct` (`chain.go:12`) is a thread-safe sequential executor. `NewChain` filters `nil`; `Use` supports runtime additions. `ChainOption` currently exposes `WithTimeout` to wrap each stage with `context.WithTimeout`.
 - `(*Chain).Execute(ctx, stage, *State) error` copies the middleware slice to isolate concurrent `Use`; hook invocation is centralized in `exec`, with `runWithTimeout` handling deadlines and cancellation.
 
 ```go
@@ -43,8 +43,8 @@ if err := mw.Execute(ctx, middleware.StageBeforeAgent, state); err != nil {
 
 ## pkg/agent — Agent Loop, Context, Options, ModelOutput
 
-- `type Model interface` (`pkg/agent/agent.go:16`) exposes `Generate(context.Context, *Context) (*ModelOutput, error)`, allowing a model to emit the next step based on accumulated state.
-- `type ToolExecutor interface` (`agent.go:21`) abstracts tool dispatch; `Execute(ctx, call, *Context)` must return `ToolResult` or error. If tools are configured but `ToolExecutor` is `nil`, `Run` returns `tool executor is nil`.
+- `type Model interface` (`pkg/agent/agent.go:18`) exposes `Generate(context.Context, *Context) (*ModelOutput, error)`, allowing a model to emit the next step based on accumulated state. Note: this is the internal agent-level interface; the user-facing model interface is `model.Model` in `pkg/model/interface.go` with `Complete` and `CompleteStream`.
+- `type ToolExecutor interface` (`agent.go:23`) abstracts tool dispatch; `Execute(ctx, ToolCall, *Context)` must return `ToolResult` or error. If tools are configured but `ToolExecutor` is `nil`, `Run` returns `tool executor is nil`.
 - `type ToolCall` / `ToolResult` / `ModelOutput` (`agent.go:26-43`) carry model-driven tool calls and generated text. `ModelOutput.Done` short-circuits the loop; empty `ToolCalls` is also a stop condition.
 - `type Agent struct` holds `model`, `tools`, `opts`, `mw`. `New(model, tools, opts)` (`agent.go:55`) calls `opts.withDefaults()` and auto-creates an empty chain when middleware is missing.
 - `(*Agent).Run(ctx, *Context)` (`agent.go:70`) is the core loop: triggers `StageBeforeAgent`, then per-iteration `StageBeforeModel`, `StageAfterModel`, tool calls, `StageAfterTool`, and final `StageAfterAgent`. `MaxIterations` overflow returns `ErrMaxIterations`.
@@ -78,11 +78,11 @@ fmt.Printf("final output: %s (tools=%d)\n", out.Content, len(out.ToolCalls))
 
 ## pkg/model — Model Interface, Anthropic Provider, Options
 
-- `type Message`, `ToolCall`, `ToolDefinition` (`interface.go:5-24`) define model-level chat and callable tool descriptions using lightweight `string` + `map[string]any`.
-- `type Request` (`interface.go:27`) aggregates `Messages`, `Tools`, `System`, `Model`, `MaxTokens`, `Temperature` (pointer to distinguish unset from zero). Callers must order messages correctly.
-- `type Response` / `type Usage` (`interface.go:38-48`) provide token accounting; `CacheReadTokens` / `CacheCreationTokens` match Anthropic semantics.
-- `type StreamHandler func(StreamResult) error` (`interface.go:56`); `StreamResult` may carry `Delta`, `ToolCall`, `Response`, with `Final` marking completion.
-- `type Model interface` (`interface.go:60`) unifies `Complete` and `CompleteStream`; the Agent layer remains model-agnostic.
+- `type Message`, `ToolCall`, `ToolDefinition` (`interface.go:33-73`) define model-level chat and callable tool descriptions using lightweight `string` + `map[string]any`. `Message` supports multimodal content via `ContentBlocks []ContentBlock` (takes precedence over `Content` when non-empty) and `ReasoningContent` for thinking models.
+- `type Request` (`interface.go:76`) aggregates `Messages`, `Tools`, `System`, `Model`, `SessionID`, `MaxTokens`, `Temperature` (pointer to distinguish unset from zero), `EnablePromptCache`. Callers must order messages correctly.
+- `type Response` / `type Usage` (`interface.go:97-101`) provide token accounting; `CacheReadTokens` / `CacheCreationTokens` match Anthropic semantics.
+- `type StreamHandler func(StreamResult) error` (`interface.go:112`); `StreamResult` may carry `Delta`, `ToolCall`, `Response`, with `Final` marking completion.
+- `type Model interface` (`interface.go:115`) unifies `Complete(ctx, Request) (*Response, error)` and `CompleteStream(ctx, Request, StreamHandler) error`; the Agent layer remains model-agnostic.
 - `type Provider` and `ProviderFunc` (`provider.go:13-24`) allow deferred model construction; `ProviderFunc.Model` errors on nil functions to avoid silent panics.
 - `type AnthropicProvider struct` (`provider.go:27`) implements `Model(ctx)` with `CacheTTL`; `resolveAPIKey` supports explicit config or `ANTHROPIC_API_KEY`.
 - `func NewAnthropic(cfg AnthropicConfig) (Model, error)` (`anthropic.go:35`) initializes the Anthropic SDK, default token/retry settings, and `mapModelName`. `AnthropicConfig` accepts `HTTPClient` overrides.
@@ -178,7 +178,7 @@ fmt.Printf("kept %d messages\n", len(active))
 
 ### Session and LRU Semantics
 
-- `historyStore` (`pkg/api/agent.go:849`) maps `session -> *message.History`; the same session always gets the same instance. After eviction, a new `History` is created—old data is unrecoverable.
+- `historyStore` (`pkg/api/runtime_helpers.go`) maps `session -> *message.History`; the same session always gets the same instance. After eviction, a new `History` is created—old data is unrecoverable.
 - `lastUsed` timestamps update on every `Get`; a coarse `sync.Mutex` favors correctness over max throughput in high concurrency.
 - Default `maxSize` is `api.defaultMaxSessions (1000)`; adjust via `api.WithMaxSessions(n)` (`options.go:149`). `n <= 0` is ignored.
 - For custom persistence (or alternative storage), call `History.All()` at session end and store results; on restore, use `Replace`. Clone messages first to avoid mutation.
@@ -220,21 +220,36 @@ bus.Close()
 
 ## pkg/api — Unified Entry, Request, Response
 
-- `type Options` (`pkg/api/options.go:52`) configures Runtime. Key fields: `EntryPoint`, `Mode ModeContext`, `ProjectRoot`, `ClaudeDir`, `Model model.Model`, `ModelFactory`, `SystemPrompt`, `Middleware []middleware.Middleware`, `MiddlewareTimeout`, `MaxIterations`, `Timeout`, `TokenLimit`, `MaxSessions`, `Tools []tool.Tool`, `EnabledBuiltinTools`, `CustomTools`, `MCPServers []string`, `TypedHooks`, `HookMiddleware`, `Skills`, `Commands`, `Subagents`, `Sandbox SandboxOptions`, `PermissionRequestHandler`, `ApprovalQueue`, `ApprovalApprover`, `ApprovalWhitelistTTL`, `ApprovalWait`. `withDefaults` sets `EntryPoint`, `Mode.EntryPoint`, `ProjectRoot`, `Sandbox.Root`, `MaxSessions`.
-- `type Request` (`options.go:115`) includes `Prompt`, `Mode`, `SessionID`, `Traits`, `Tags`, `Channels`, `Metadata`, `TargetSubagent`, `ToolWhitelist`, `ForceSkills`. `request.normalized` (`pkg/api/agent.go:150`) fills `SessionID`, merges `Mode`, trims prompt.
-- `type Response` (`options.go:132`) combines Agent output, skill/command results, hook events, sandbox report, and `Settings`. `Result` embeds `model.Usage` and `ToolCalls`.
-- `type Runtime struct` (`agent.go:24`) wires config loader, sandbox, tool registry/executor, hooks, `historyStore`, skills/commands/subagents managers, with `sync.RWMutex` for mutable config. Hook events are now recorded per request; `Runtime.recorder` is deprecated and retained only for backward compatibility.
-- `func New(ctx, opts) (*Runtime, error)` (`agent.go:40`) loads settings, resolves model, builds sandbox, registers tools/MCP servers, sets up hooks/skills/commands/subagents, and creates `newHistoryStore(opts.MaxSessions)`.
-- `func (rt *Runtime) Run(ctx, req) (*Response, error)` (`agent.go:70`) executes the sync flow: `prepare` validates prompt, fetches history, runs commands/skills/subagents, builds `middleware.State`, then calls `runAgent`.
-- `func (rt *Runtime) RunStream(ctx, req) (<-chan StreamEvent, error)` (`agent.go:88`) builds a progress middleware and writes `StreamEvent` (`pkg/api/stream.go:5`) to a channel. Types include Anthropic-compatible `message_*` plus `agent_start`, `tool_execution_*`, `error`.
-- `type StreamEvent` / `Message` / `ContentBlock` / `Delta` / `Usage` (`stream.go:20-78`) mirror SSE payloads; all fields are optional with JSON tags.
-- `historyStore` (`agent.go:849`) manages `map[string]*message.History` and `lastUsed`; `Get(id)` calls `evictOldest()` when exceeding `maxSize` (default 1000 or `Opts.MaxSessions`). Implements the LRU required by the docs.
+- `type Options` (`pkg/api/options.go:150`) configures Runtime. Key fields:
+  - **Core**: `EntryPoint`, `Mode ModeContext`, `ProjectRoot`, `SettingsPath`, `SettingsOverrides *config.Settings`, `SettingsLoader *config.SettingsLoader`, `EmbedFS fs.FS`
+  - **Model**: `Model model.Model` (direct instance), `ModelFactory ModelFactory` (interface with `Model(ctx) (model.Model, error)`), `ModelPool map[ModelTier]model.Model`, `SubagentModelMapping map[string]ModelTier`, `DefaultEnableCache bool`
+  - **Prompt**: `SystemPrompt`, `RulesEnabled *bool` (nil = enabled, false = disabled)
+  - **Middleware**: `Middleware []middleware.Middleware`, `MiddlewareTimeout time.Duration`
+  - **Limits**: `MaxIterations`, `Timeout`, `TokenLimit`, `MaxSessions`
+  - **Tools**: `Tools []tool.Tool` (legacy override), `EnabledBuiltinTools []string` (nil = all, empty = none), `DisallowedTools []string`, `CustomTools []tool.Tool`, `MCPServers []string`
+  - **Hooks**: `TypedHooks []corehooks.ShellHook`, `HookMiddleware []coremw.Middleware`, `HookTimeout time.Duration`
+  - **Runtime**: `Skills []SkillRegistration`, `Commands []CommandRegistration`, `Subagents []SubagentRegistration`
+  - **Sandbox**: `Sandbox SandboxOptions`
+  - **Token Tracking**: `TokenTracking bool`, `TokenCallback TokenCallback`
+  - **Permissions**: `PermissionRequestHandler`, `ApprovalQueue *security.ApprovalQueue`, `ApprovalApprover string`, `ApprovalWhitelistTTL time.Duration`, `ApprovalWait bool`
+  - **Auto Compact**: `AutoCompact CompactConfig` (with `Enabled`, `Threshold`, `PreserveCount`, `SummaryModel`, `PreserveInitial`, `InitialCount`, `PreserveUserText`, `UserTextTokens`)
+  - **Observability**: `OTEL OTELConfig` (with `Enabled`, `ServiceName`, `Endpoint`)
+  `withDefaults` sets `EntryPoint`, `Mode.EntryPoint`, `ProjectRoot`, `Sandbox.Root`, `MaxSessions`.
+- `type ModelFactory interface` (`options.go:134`) has a single method `Model(ctx context.Context) (model.Model, error)`. `ModelFactoryFunc` adapts a plain function to this interface.
+- `type Request` (`options.go:258`) includes `Prompt`, `ContentBlocks []model.ContentBlock`, `Mode`, `SessionID`, `RequestID string`, `Model ModelTier`, `EnablePromptCache *bool`, `Traits`, `Tags`, `Channels`, `Metadata`, `TargetSubagent`, `ToolWhitelist`, `ForceSkills`. `request.normalized` fills `SessionID`, merges `Mode`, trims prompt, auto-generates `RequestID` if empty.
+- `type Response` (`options.go:277`) combines Agent output, skill/command results, hook events, sandbox report, and `Settings`. `Result` embeds `model.Usage` and `ToolCalls`.
+- `type Runtime struct` (`agent.go:58`) wires config loader, sandbox, tool registry/executor, hooks, `historyStore`, skills/commands/subagents managers, with `sync.RWMutex` for mutable config. Hook events are now recorded per request; `Runtime.recorder` is deprecated and retained only for backward compatibility.
+- `func New(ctx, opts) (*Runtime, error)` (`agent.go:94`) loads settings, resolves model, builds sandbox, registers tools/MCP servers, sets up hooks/skills/commands/subagents, and creates `newHistoryStore(opts.MaxSessions)`.
+- `func (rt *Runtime) Run(ctx, req) (*Response, error)` (`agent.go:240`) executes the sync flow: `prepare` validates prompt, fetches history, runs commands/skills/subagents, builds `middleware.State`, then calls `runAgent`.
+- `func (rt *Runtime) RunStream(ctx, req) (<-chan StreamEvent, error)` (`agent.go:273`) builds a progress middleware and writes `StreamEvent` (`pkg/api/stream.go:35`) to a channel. Types include Anthropic-compatible `message_*` plus `agent_start`, `tool_execution_start`, `tool_execution_output`, `tool_execution_result`, `error`.
+- `type StreamEvent` / `Message` / `ContentBlock` / `Delta` / `Usage` (`stream.go:35-86`) mirror SSE payloads; all fields are optional with JSON tags. `StreamEvent` fields include `Type`, `Message`, `Index`, `ContentBlock`, `Delta`, `Usage` (Anthropic-compatible), plus agent extensions: `ToolUseID`, `Name`, `Output`, `IsStderr`, `IsError`, `SessionID`, `Iteration`, `TotalIter`.
+- `historyStore` (`runtime_helpers.go`) manages `map[string]*message.History` and `lastUsed`; `Get(id)` calls `evictOldest()` when exceeding `maxSize` (default 1000 or `Opts.MaxSessions`). Implements the LRU required by the docs.
 - Events/Hooks: `HookRecorder`, `corehooks.Executor`, and `core/events.Event` work together; `newProgressMiddleware` turns `middleware.StageBeforeModel` / `StageAfterModel`, etc., into SSE events.
 
 ```go
 rt, err := api.New(ctx, api.Options{
 	EntryPoint: api.EntryPointCLI,
-	ModelFactory: model.ModelFactoryFunc(func(ctx context.Context) (model.Model, error) {
+	ModelFactory: api.ModelFactoryFunc(func(ctx context.Context) (model.Model, error) {
 		return model.NewAnthropic(model.AnthropicConfig{
 			APIKey: os.Getenv("ANTHROPIC_API_KEY"),
 		})
@@ -282,7 +297,7 @@ for evt := range eventsCh {
 
 - `ModeContext` (`options.go:41`) bundles `EntryPoint` with `CLIContext`, `CIContext`, `PlatformContext`. When `Request.Mode` is empty, Runtime fills it from `Options.Mode`. CLI/CI/Platform structs allow `Metadata`/`Labels` for hooks or skills.
 - `SandboxOptions` (`options.go:87`) exposes `Root`, `AllowedPaths`, `NetworkAllow`, `ResourceLimit sandbox.ResourceLimits`; `buildSandboxManager` converts to `sandbox.Manager` shared with the tool executor.
-- `SkillRegistration`, `CommandRegistration`, `SubagentRegistration` (`options.go:95-111`) bind declarative runtime definitions with handlers for CLI entry. `registerSkills/Commands/Subagents` validate non-nil handlers.
+- `SkillRegistration`, `CommandRegistration`, `SubagentRegistration` (`options.go:116-131`) bind declarative runtime definitions with handlers. Each has `Definition` and `Handler` fields. `registerSkills/Commands/Subagents` validate non-nil handlers.
 - `WithMaxSessions` (`options.go:149`) returns a configurator to adjust `Options.MaxSessions` before `api.New`; used with `historyStore` for dynamic session caps.
 - `Request.ToolWhitelist` converts to `map[string]struct{}` during `prepare` and gates tool execution; disallowed tools are rejected early.
 
@@ -338,16 +353,16 @@ func (s *server) handleRun(w http.ResponseWriter, r *http.Request) {
 ```
 
 **Implementation Details:**
-- `sessionGate` (pkg/api/runtime_helpers.go:1) uses `sync.Map` + channel semaphores for per-session locking.
+- `sessionGate` (`pkg/api/runtime_helpers.go`) uses `sync.Map` + channel semaphores for per-session locking.
 - `beginRun`/`endRun` coordinate with `Runtime.Close()` via `sync.WaitGroup` to prevent resource leaks.
-- Each request gets its own `hookRecorder` (pkg/api/runtime_helpers.go:30) to avoid shared state races.
+- Each request gets its own `hookRecorder` (`pkg/api/options.go`) to avoid shared state races.
 - `Options.frozen()` deep-copies configuration during `api.New` to prevent external mutation races.
 
 ## v0.4.0 New APIs
 
 ### Token Statistics
 
-- `type TokenStats` (`pkg/api/token.go`) tracks token usage across requests: `InputTokens`, `OutputTokens`, `CacheReadTokens`, `CacheCreationTokens`, `TotalTokens`.
+- `type TokenStats` (`pkg/api/stats.go`) tracks token usage per model call: `InputTokens`, `OutputTokens`, `CacheRead`, `CacheCreation`, `TotalTokens`, `Model`, `SessionID`, `RequestID`, `Timestamp`.
 - `type TokenTracker` (`pkg/api/token.go`) accumulates stats across turns with thread-safe access via `Record(stats)` and `GetStats()`.
 - `Options.TokenCallback` is called **synchronously** after each model call for real-time monitoring. The callback should be lightweight and non-blocking to avoid delaying agent execution. If async processing is needed, spawn a goroutine inside the callback.
 
@@ -368,33 +383,42 @@ rt, _ := api.New(ctx, api.Options{
 
 ### Auto Compact
 
-- `type Compactor` (`pkg/api/compact.go`) monitors token usage and triggers context compression when `CompactThreshold` is exceeded.
-- Uses a separate model (`CompactModel`) for summarization to reduce costs.
-- `ShouldCompact(currentTokens)` checks threshold; `Compact(ctx, history)` generates summary.
+- `type CompactConfig` (`pkg/api/compact.go:19`) configures automatic context compaction with fields: `Enabled`, `Threshold` (trigger ratio, default 0.8), `PreserveCount` (keep latest N messages, default 5), `SummaryModel` (model tier/name for summary), `PreserveInitial`, `InitialCount`, `PreserveUserText`, `UserTextTokens`.
+- Set via `Options.AutoCompact` or `WithAutoCompact(config)`.
+- Uses a separate model for summarization to reduce costs.
 
 ```go
 rt, _ := api.New(ctx, api.Options{
-    ModelFactory:     provider,
-    CompactThreshold: 100000,              // Trigger at 100k tokens
-    CompactModel:     "claude-haiku-4-5",  // Cheaper model for compression
+    ModelFactory: provider,
+    AutoCompact: api.CompactConfig{
+        Enabled:       true,
+        Threshold:     0.8,              // Trigger at 80% of token limit
+        PreserveCount: 5,                // Keep latest 5 messages
+        SummaryModel:  "claude-haiku-4-5", // Cheaper model for compression
+    },
 })
 ```
 
 ### Multi-model Support (ModelFactory)
 
-- `Options.ModelFactory` is now `func(ctx context.Context) model.Model` instead of direct `model.Model`.
-- Enables subagent-level model binding where different agents use different models.
-- `model.NewAnthropicProvider(opts...)` returns a provider implementing the factory pattern.
+- `Options.ModelFactory` is a `ModelFactory` interface with `Model(ctx context.Context) (model.Model, error)`.
+- `model.NewAnthropicProvider(opts...)` returns a provider implementing this interface.
+- `Options.ModelPool` maps `ModelTier` constants (`ModelTierLow`, `ModelTierMid`, `ModelTierHigh`) to model instances for cost optimization.
+- `Options.SubagentModelMapping` maps subagent type names to model tiers, enabling different models for different subagent types.
 
 ```go
-// Different models for main agent and subagents
+// Different models for main agent and subagents via ModelPool
 mainProvider := model.NewAnthropicProvider(model.WithModel("claude-sonnet-4-5"))
-haiku := model.NewAnthropicProvider(model.WithModel("claude-haiku-4-5"))
 
 rt, _ := api.New(ctx, api.Options{
     ModelFactory: mainProvider,
-    Subagents: []api.SubagentRegistration{
-        {Name: "quick-tasks", ModelFactory: haiku},
+    ModelPool: map[api.ModelTier]model.Model{
+        api.ModelTierLow: haikuModel,   // cheap model for simple tasks
+        api.ModelTierHigh: opusModel,   // powerful model for complex tasks
+    },
+    SubagentModelMapping: map[string]api.ModelTier{
+        "explore": api.ModelTierLow,
+        "plan":    api.ModelTierHigh,
     },
 })
 ```
@@ -416,12 +440,14 @@ rt, _ := api.New(ctx, api.Options{
 
 - `type RulesLoader` (`pkg/config/rules.go`) loads markdown rules from `.claude/rules/` directory.
 - Supports hot-reload via fsnotify; rules are sorted alphabetically and merged into system prompt.
-- `GetContent()` returns concatenated rules; `WatchChanges()` enables live updates.
+- `GetContent()` returns concatenated rules; `WatchChanges(callback)` enables live updates with a callback on change.
 
 ```go
-loader := config.NewRulesLoader("/project/.claude/rules")
+loader := config.NewRulesLoader("/project")
 rules := loader.GetContent() // "# Rule 1\n...\n# Rule 2\n..."
-loader.WatchChanges()        // Enable hot-reload
+loader.WatchChanges(func(rules []config.Rule) {
+    // Handle updated rules
+})
 defer loader.Close()
 ```
 
@@ -441,16 +467,19 @@ log.Printf("Request %s completed", resp.RequestID)
 
 ### OpenTelemetry Integration
 
-- `type Tracer` (`pkg/api/otel.go`) wraps OpenTelemetry spans for agent operations.
-- `Options.TracerProvider` accepts a custom `trace.TracerProvider`.
+- `type OTELConfig` (`pkg/api/otel_config.go:6`) configures distributed tracing with fields: `Enabled`, `ServiceName`, `Endpoint`.
+- Set via `Options.OTEL` or `WithOTEL(config)`.
+- Requires build tag `otel` for actual instrumentation; otherwise no-op.
 - Spans are created for agent runs, model calls, and tool executions.
 
 ```go
-import "go.opentelemetry.io/otel"
-
 rt, _ := api.New(ctx, api.Options{
-    ModelFactory:    provider,
-    TracerProvider:  otel.GetTracerProvider(),
+    ModelFactory: provider,
+    OTEL: api.OTELConfig{
+        Enabled:     true,
+        ServiceName: "my-agent",
+        Endpoint:    "http://localhost:4318",
+    },
 })
 ```
 

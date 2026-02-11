@@ -63,10 +63,10 @@ func main() {
     ctx := context.Background()
 
     // 创建模型提供者
-    provider := model.NewAnthropicProvider(
-        model.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY")),
-        model.WithModel("claude-sonnet-4-5"),
-    )
+    provider := &model.AnthropicProvider{
+        APIKey:    os.Getenv("ANTHROPIC_API_KEY"),
+        ModelName: "claude-sonnet-4-5",
+    }
 
     // 初始化运行时
     runtime, err := api.New(ctx, api.Options{
@@ -87,7 +87,7 @@ func main() {
         log.Fatal(err)
     }
 
-    log.Printf("输出: %s", result.Output)
+    log.Printf("输出: %s", result.Result.Output)
 }
 ```
 
@@ -116,22 +116,23 @@ import (
 func main() {
     ctx := context.Background()
 
-    provider := model.NewAnthropicProvider(
-        model.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY")),
-        model.WithModel("claude-sonnet-4-5"),
-    )
+    provider := &model.AnthropicProvider{
+        APIKey:    os.Getenv("ANTHROPIC_API_KEY"),
+        ModelName: "claude-sonnet-4-5",
+    }
 
-    // 定义日志 Middleware
-    loggingMiddleware := middleware.Middleware{
-        BeforeAgent: func(ctx context.Context, req *middleware.AgentRequest) (*middleware.AgentRequest, error) {
-            log.Printf("[请求] %s", req.Input)
-            req.Meta["start_time"] = time.Now()
-            return req, nil
+    // 定义日志 Middleware（Middleware 是接口，使用 Funcs 辅助结构体）
+    loggingMiddleware := middleware.Funcs{
+        Identifier: "logging",
+        OnBeforeAgent: func(ctx context.Context, st *middleware.State) error {
+            log.Printf("[请求开始]")
+            st.Values["start_time"] = time.Now()
+            return nil
         },
-        AfterAgent: func(ctx context.Context, resp *middleware.AgentResponse) (*middleware.AgentResponse, error) {
-            duration := time.Since(resp.Meta["start_time"].(time.Time))
+        OnAfterAgent: func(ctx context.Context, st *middleware.State) error {
+            duration := time.Since(st.Values["start_time"].(time.Time))
             log.Printf("[响应] 耗时: %v", duration)
-            return resp, nil
+            return nil
         },
     }
 
@@ -154,7 +155,7 @@ func main() {
         log.Fatal(err)
     }
 
-    log.Printf("结果: %s", result.Output)
+    log.Printf("结果: %s", result.Result.Output)
 }
 ```
 
@@ -176,10 +177,10 @@ import (
 func main() {
     ctx := context.Background()
 
-    provider := model.NewAnthropicProvider(
-        model.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY")),
-        model.WithModel("claude-sonnet-4-5"),
-    )
+    provider := &model.AnthropicProvider{
+        APIKey:    os.Getenv("ANTHROPIC_API_KEY"),
+        ModelName: "claude-sonnet-4-5",
+    }
 
     runtime, err := api.New(ctx, api.Options{
         ProjectRoot:   ".",
@@ -191,18 +192,23 @@ func main() {
     defer runtime.Close()
 
     // 使用流式 API
-    events := runtime.RunStream(ctx, api.Request{
+    events, err := runtime.RunStream(ctx, api.Request{
         Prompt:    "分析当前项目结构",
         SessionID: "stream-demo",
     })
+    if err != nil {
+        log.Fatal(err)
+    }
 
     for event := range events {
         switch event.Type {
         case "content_block_delta":
-            fmt.Print(event.Delta.Text)
+            if event.Delta != nil {
+                fmt.Print(event.Delta.Text)
+            }
         case "tool_execution_start":
-            fmt.Printf("\n[执行工具] %s\n", event.ToolName)
-        case "tool_execution_stop":
+            fmt.Printf("\n[执行工具] %s\n", event.Name)
+        case "tool_execution_result":
             fmt.Printf("[工具输出] %s\n", event.Output)
         case "message_stop":
             fmt.Println("\n[完成]")
@@ -233,7 +239,8 @@ The Model interface defines provider behavior (`pkg/model/interface.go`):
 
 ```go
 type Model interface {
-    Generate(ctx context.Context, c *Context) (*ModelOutput, error)
+    Complete(ctx context.Context, req Request) (*Response, error)
+    CompleteStream(ctx context.Context, req Request, cb StreamHandler) error
 }
 ```
 
@@ -327,12 +334,9 @@ Configuration lives under `.claude/`:
 ```go
 import "github.com/cexll/agentsdk-go/pkg/config"
 
-loader, err := config.NewLoader(".", config.WithClaudeDir(".claude"))
-if err != nil {
-    log.Fatal(err)
-}
+loader := &config.SettingsLoader{ProjectRoot: "."}
 
-cfg, err := loader.Load()
+settings, err := loader.Load()
 if err != nil {
     log.Fatal(err)
 }
@@ -343,33 +347,35 @@ if err != nil {
 ### Basic Middleware
 
 ```go
-loggingMiddleware := middleware.Middleware{
-    BeforeAgent: func(ctx context.Context, req *middleware.AgentRequest) (*middleware.AgentRequest, error) {
-        log.Printf("收到请求: %s", req.Input)
-        return req, nil
+loggingMiddleware := middleware.Funcs{
+    Identifier: "logging",
+    OnBeforeAgent: func(ctx context.Context, st *middleware.State) error {
+        log.Printf("收到请求")
+        return nil
     },
-    AfterAgent: func(ctx context.Context, resp *middleware.AgentResponse) (*middleware.AgentResponse, error) {
-        log.Printf("返回响应: %s", resp.Output)
-        return resp, nil
+    OnAfterAgent: func(ctx context.Context, st *middleware.State) error {
+        log.Printf("返回响应")
+        return nil
     },
 }
 ```
 
 ### Sharing State
 
-Use `Meta` to share data across hooks:
+Use `State.Values` to share data across hooks:
 
 ```go
-timingMiddleware := middleware.Middleware{
-    BeforeAgent: func(ctx context.Context, req *middleware.AgentRequest) (*middleware.AgentRequest, error) {
-        req.Meta["start_time"] = time.Now()
-        return req, nil
+timingMiddleware := middleware.Funcs{
+    Identifier: "timing",
+    OnBeforeAgent: func(ctx context.Context, st *middleware.State) error {
+        st.Values["start_time"] = time.Now()
+        return nil
     },
-    AfterAgent: func(ctx context.Context, resp *middleware.AgentResponse) (*middleware.AgentResponse, error) {
-        startTime := resp.Meta["start_time"].(time.Time)
+    OnAfterAgent: func(ctx context.Context, st *middleware.State) error {
+        startTime := st.Values["start_time"].(time.Time)
         duration := time.Since(startTime)
         log.Printf("执行时间: %v", duration)
-        return resp, nil
+        return nil
     },
 }
 ```
@@ -379,12 +385,11 @@ timingMiddleware := middleware.Middleware{
 Returning an error stops the chain:
 
 ```go
-validationMiddleware := middleware.Middleware{
-    BeforeAgent: func(ctx context.Context, req *middleware.AgentRequest) (*middleware.AgentRequest, error) {
-        if req.Input == "" {
-            return nil, errors.New("输入不能为空")
-        }
-        return req, nil
+validationMiddleware := middleware.Funcs{
+    Identifier: "validation",
+    OnBeforeAgent: func(ctx context.Context, st *middleware.State) error {
+        // Returning an error stops the middleware chain
+        return errors.New("输入不能为空")
     },
 }
 ```
@@ -430,39 +435,39 @@ func createRateLimitMiddleware(maxTokens int) middleware.Middleware {
         lastTime:  time.Now(),
     }
 
-    return middleware.Middleware{
-        BeforeAgent: func(ctx context.Context, req *middleware.AgentRequest) (*middleware.AgentRequest, error) {
+    return middleware.Funcs{
+        Identifier: "rate-limit",
+        OnBeforeAgent: func(ctx context.Context, st *middleware.State) error {
             if !limiter.allow() {
-                return nil, errors.New("请求过于频繁，请稍后再试")
+                return errors.New("请求过于频繁，请稍后再试")
             }
-            return req, nil
+            return nil
         },
     }
 }
 
 func createMonitoringMiddleware() middleware.Middleware {
-    return middleware.Middleware{
-        BeforeModel: func(ctx context.Context, msgs []message.Message) ([]message.Message, error) {
+    return middleware.Funcs{
+        Identifier: "monitoring",
+        OnBeforeModel: func(ctx context.Context, st *middleware.State) error {
             // 记录模型调用
             log.Printf("[监控] 模型调用开始")
-            return msgs, nil
+            return nil
         },
-        AfterModel: func(ctx context.Context, output *agent.ModelOutput) (*agent.ModelOutput, error) {
+        OnAfterModel: func(ctx context.Context, st *middleware.State) error {
             // 记录模型响应
-            log.Printf("[监控] 模型调用结束，生成 %d 个工具调用", len(output.ToolCalls))
-            return output, nil
+            log.Printf("[监控] 模型调用结束")
+            return nil
         },
-        BeforeTool: func(ctx context.Context, call *middleware.ToolCall) (*middleware.ToolCall, error) {
+        OnBeforeTool: func(ctx context.Context, st *middleware.State) error {
             // 记录工具调用
-            log.Printf("[监控] 执行工具: %s", call.Name)
-            return call, nil
+            log.Printf("[监控] 执行工具")
+            return nil
         },
-        AfterTool: func(ctx context.Context, result *middleware.ToolResult) (*middleware.ToolResult, error) {
+        OnAfterTool: func(ctx context.Context, st *middleware.State) error {
             // 记录工具结果
-            if result.Error != nil {
-                log.Printf("[监控] 工具执行失败: %v", result.Error)
-            }
-            return result, nil
+            log.Printf("[监控] 工具执行完成")
+            return nil
         },
     }
 }

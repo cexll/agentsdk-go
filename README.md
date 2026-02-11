@@ -35,7 +35,12 @@ agentsdk-go is a modular agent development framework that implements core Claude
 - `examples/03-http` - REST + SSE server on :8080
 - `examples/04-advanced` - Full pipeline with middleware, hooks, MCP, sandbox, skills, subagents
 - `examples/05-custom-tools` - Selective built-in tools and custom tool registration
-- `examples/05-multimodel` - Multi-model configuration demo
+- `examples/07-multimodel` - Multi-model configuration demo
+- `examples/06-embed` - Embedded filesystem demo
+- `examples/09-task-system` - Task tracking and dependencies
+- `examples/10-hooks` - Hooks lifecycle events
+- `examples/11-reasoning` - Reasoning/thinking model support
+- `examples/12-multimodal` - Image and document input
 
 ## System Architecture
 
@@ -43,7 +48,7 @@ agentsdk-go is a modular agent development framework that implements core Claude
 
 - `pkg/agent` - Agent execution loop coordinating model calls and tool execution
 - `pkg/middleware` - Six interception points for extending the request/response lifecycle
-- `pkg/model` - Model adapters, currently supports Anthropic Claude
+- `pkg/model` - Model adapters (Anthropic Claude, OpenAI-compatible)
 - `pkg/tool` - Tool registration and execution, including built-in tools and MCP tool support
 - `pkg/message` - Message history management with an LRU-based session cache
 - `pkg/api` - Unified API surface exposing SDK features
@@ -153,8 +158,8 @@ package main
 
 import (
     "context"
+    "fmt"
     "log"
-    "os"
 
     "github.com/cexll/agentsdk-go/pkg/api"
     "github.com/cexll/agentsdk-go/pkg/model"
@@ -163,32 +168,29 @@ import (
 func main() {
     ctx := context.Background()
 
-    // Create the model provider
-    provider := model.NewAnthropicProvider(
-        model.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY")),
-        model.WithModel("claude-sonnet-4-5"),
-    )
+    // Create the model provider (reads ANTHROPIC_API_KEY from env automatically)
+    provider := &model.AnthropicProvider{ModelName: "claude-sonnet-4-5-20250929"}
 
     // Initialize the runtime
-    runtime, err := api.New(ctx, api.Options{
-        ProjectRoot:   ".",
-        ModelFactory:  provider,
+    rt, err := api.New(ctx, api.Options{
+        ModelFactory: provider,
     })
     if err != nil {
         log.Fatal(err)
     }
-    defer runtime.Close()
+    defer rt.Close()
 
     // Execute a task
-    result, err := runtime.Run(ctx, api.Request{
+    resp, err := rt.Run(ctx, api.Request{
         Prompt:    "List files in the current directory",
         SessionID: "demo",
     })
     if err != nil {
         log.Fatal(err)
     }
-
-    log.Printf("Output: %s", result.Output)
+    if resp.Result != nil {
+        fmt.Println(resp.Result.Output)
+    }
 }
 ```
 
@@ -200,52 +202,59 @@ import (
     "log"
     "time"
 
+    "github.com/cexll/agentsdk-go/pkg/api"
     "github.com/cexll/agentsdk-go/pkg/middleware"
 )
 
-// Logging middleware
-loggingMiddleware := middleware.Middleware{
-    BeforeAgent: func(ctx context.Context, req *middleware.AgentRequest) (*middleware.AgentRequest, error) {
-        log.Printf("[REQUEST] %s", req.Input)
-        req.Meta["start_time"] = time.Now()
-        return req, nil
+// Logging middleware using the Funcs helper
+loggingMiddleware := middleware.Funcs{
+    Identifier: "logging",
+    OnBeforeAgent: func(ctx context.Context, st *middleware.State) error {
+        st.Values["start_time"] = time.Now()
+        log.Println("[REQUEST] agent starting")
+        return nil
     },
-    AfterAgent: func(ctx context.Context, resp *middleware.AgentResponse) (*middleware.AgentResponse, error) {
-        duration := time.Since(resp.Meta["start_time"].(time.Time))
-        log.Printf("[RESPONSE] %s (elapsed: %v)", resp.Output, duration)
-        return resp, nil
+    OnAfterAgent: func(ctx context.Context, st *middleware.State) error {
+        if start, ok := st.Values["start_time"].(time.Time); ok {
+            log.Printf("[RESPONSE] elapsed: %v", time.Since(start))
+        }
+        return nil
     },
 }
 
 // Inject middleware
-runtime, err := api.New(ctx, api.Options{
-    ProjectRoot:   ".",
-    ModelFactory:  provider,
-    Middleware:    []middleware.Middleware{loggingMiddleware},
+rt, err := api.New(ctx, api.Options{
+    ModelFactory: provider,
+    Middleware:   []middleware.Middleware{loggingMiddleware},
 })
 if err != nil {
     log.Fatal(err)
 }
-defer runtime.Close()
+defer rt.Close()
 ```
 
 ### Streaming Output
 
 ```go
 // Use the streaming API to get real-time progress
-events := runtime.RunStream(ctx, api.Request{
+events, err := rt.RunStream(ctx, api.Request{
     Prompt:    "Analyze the repository structure",
     SessionID: "analysis",
 })
+if err != nil {
+    log.Fatal(err)
+}
 
 for event := range events {
     switch event.Type {
-    case "content_block_delta":
-        fmt.Print(event.Delta.Text)
-    case "tool_execution_start":
-        fmt.Printf("\n[Tool Execution] %s\n", event.ToolName)
-    case "tool_execution_stop":
-        fmt.Printf("[Tool Result] %s\n", event.Output)
+    case api.EventContentBlockDelta:
+        if event.Delta != nil {
+            fmt.Print(event.Delta.Text)
+        }
+    case api.EventToolExecutionStart:
+        fmt.Printf("\n[Tool] %s\n", event.Name)
+    case api.EventToolExecutionResult:
+        fmt.Printf("[Result] %v\n", event.Output)
     }
 }
 ```
@@ -256,11 +265,10 @@ Runtime supports concurrent calls across different `SessionID`s. Calls sharing t
 
 ```go
 // Same runtime can be safely used from multiple goroutines
-runtime, _ := api.New(ctx, api.Options{
-    ProjectRoot:  ".",
+rt, _ := api.New(ctx, api.Options{
     ModelFactory: provider,
 })
-defer runtime.Close()
+defer rt.Close()
 
 // Concurrent requests with different sessions execute in parallel
 var wg sync.WaitGroup
@@ -268,7 +276,7 @@ for i := 0; i < 10; i++ {
     wg.Add(1)
     go func(id int) {
         defer wg.Done()
-        result, err := runtime.Run(ctx, api.Request{
+        resp, err := rt.Run(ctx, api.Request{
             Prompt:    fmt.Sprintf("Task %d", id),
             SessionID: fmt.Sprintf("session-%d", id), // Different sessions run concurrently
         })
@@ -276,14 +284,16 @@ for i := 0; i < 10; i++ {
             log.Printf("Task %d failed: %v", id, err)
             return
         }
-        log.Printf("Task %d completed: %s", id, result.Output)
+        if resp.Result != nil {
+            log.Printf("Task %d completed: %s", id, resp.Result.Output)
+        }
     }(i)
 }
 wg.Wait()
 
 // Requests with the same session ID must be serialized by the caller
-_, _ = runtime.Run(ctx, api.Request{Prompt: "First", SessionID: "same"})
-_, _ = runtime.Run(ctx, api.Request{Prompt: "Second", SessionID: "same"})
+_, _ = rt.Run(ctx, api.Request{Prompt: "First", SessionID: "same"})
+_, _ = rt.Run(ctx, api.Request{Prompt: "Second", SessionID: "same"})
 ```
 
 **Concurrency Guarantees:**
@@ -299,7 +309,6 @@ Choose which built-ins to load and append your own tools:
 
 ```go
 rt, err := api.New(ctx, api.Options{
-    ProjectRoot:         ".",
     ModelFactory:        provider,
     EnabledBuiltinTools: []string{"bash", "file_read"}, // nil = all, empty = none
     CustomTools:         []tool.Tool{&EchoTool{}},      // appended when Tools is empty
@@ -318,12 +327,18 @@ See a runnable demo in `examples/05-custom-tools`.
 
 ## Examples
 
-The repository includes five progressive examples aligned to the new five-layer path:
+The repository includes progressive examples:
 - `01-basic` – minimal single request/response.
 - `02-cli` – interactive REPL with session history and optional config load.
 - `03-http` – REST + SSE server on `:8080`.
 - `04-advanced` – full pipeline exercising middleware, hooks, MCP, sandbox, skills, and subagents.
 - `05-custom-tools` – selective built-ins plus custom tool registration.
+- `07-multimodel` – multi-model tier configuration.
+- `06-embed` – embedded filesystem for bundled `.claude` configs.
+- `09-task-system` – task tracking and dependency management.
+- `10-hooks` – hooks lifecycle events.
+- `11-reasoning` – reasoning/thinking model support.
+- `12-multimodal` – image and document input.
 
 ## Project Structure
 
@@ -346,7 +361,8 @@ agentsdk-go/
 │   ├── runtime/
 │   │   ├── skills/             # Skills management
 │   │   ├── subagents/          # Subagents management
-│   │   └── commands/           # Commands parsing
+│   │   ├── commands/           # Commands parsing
+│   │   └── tasks/              # Task tracking and dependencies
 │   └── security/               # Security utilities
 ├── cmd/cli/                    # CLI entrypoint
 ├── examples/                   # Example code
@@ -402,17 +418,21 @@ Configuration precedence (high → low):
 ### Token Statistics & Auto Compact
 
 ```go
-runtime, err := api.New(ctx, api.Options{
-    ProjectRoot:  ".",
+rt, err := api.New(ctx, api.Options{
     ModelFactory: provider,
-    // Token tracking callback
-    OnTokenUsage: func(stats api.TokenStats) {
+    // Token tracking with callback
+    TokenTracking: true,
+    TokenCallback: func(stats api.TokenStats) {
         log.Printf("Tokens: input=%d, output=%d, cache_read=%d",
-            stats.InputTokens, stats.OutputTokens, stats.CacheReadTokens)
+            stats.InputTokens, stats.OutputTokens, stats.CacheRead)
     },
     // Auto compact settings
-    CompactThreshold: 100000, // Trigger compact at 100k tokens
-    CompactModel:     "claude-haiku-4-5", // Use cheaper model for summarization
+    AutoCompact: api.CompactConfig{
+        Enabled:       true,
+        Threshold:     0.8,   // Trigger compact at 80% of token limit
+        PreserveCount: 5,     // Keep last 5 messages intact
+        SummaryModel:  "claude-haiku-4-5", // Use cheaper model for summarization
+    },
 })
 ```
 
@@ -420,13 +440,13 @@ runtime, err := api.New(ctx, api.Options{
 
 ```go
 // Start background task
-result, _ := runtime.Run(ctx, api.Request{
+resp, _ := rt.Run(ctx, api.Request{
     Prompt:    "Run 'sleep 10 && echo done' in background",
     SessionID: "demo",
 })
 
 // Later, check task output
-result, _ = runtime.Run(ctx, api.Request{
+resp, _ = rt.Run(ctx, api.Request{
     Prompt:    "Get output of background task",
     SessionID: "demo",
 })
@@ -463,11 +483,14 @@ curl -N -X POST http://localhost:8080/v1/run/stream \
 
 The response format follows the Anthropic Messages API and includes these event types:
 
+- `message_start` / `message_stop` - Message boundaries
+- `content_block_start` / `content_block_stop` - Content block boundaries
+- `content_block_delta` - Incremental text output
+- `message_delta` - Message-level deltas (usage, stop reason)
 - `agent_start` / `agent_stop` - Agent execution boundaries
 - `iteration_start` / `iteration_stop` - Iteration boundaries
-- `message_start` / `message_stop` - Message boundaries
-- `content_block_delta` - Incremental text output
-- `tool_execution_start` / `tool_execution_stop` - Tool execution progress
+- `tool_execution_start` / `tool_execution_result` - Tool execution progress
+- `tool_execution_output` - Streaming tool output (stdout/stderr)
 
 ## Testing
 
@@ -594,8 +617,8 @@ func (t *CustomTool) Schema() *tool.JSONSchema {
 func (t *CustomTool) Execute(ctx context.Context, params map[string]any) (*tool.ToolResult, error) {
     // Tool implementation
     return &tool.ToolResult{
-        Name:   t.Name(),
-        Output: "Execution result",
+        Success: true,
+        Output:  "Execution result",
     }, nil
 }
 ```
@@ -603,30 +626,31 @@ func (t *CustomTool) Execute(ctx context.Context, params map[string]any) (*tool.
 ### Add Middleware
 
 ```go
-customMiddleware := middleware.Middleware{
-    BeforeAgent: func(ctx context.Context, req *middleware.AgentRequest) (*middleware.AgentRequest, error) {
+customMiddleware := middleware.Funcs{
+    Identifier: "custom",
+    OnBeforeAgent: func(ctx context.Context, st *middleware.State) error {
         // Pre-request handling
-        return req, nil
+        return nil
     },
-    AfterAgent: func(ctx context.Context, resp *middleware.AgentResponse) (*middleware.AgentResponse, error) {
+    OnAfterAgent: func(ctx context.Context, st *middleware.State) error {
         // Post-response handling
-        return resp, nil
+        return nil
     },
-    BeforeModel: func(ctx context.Context, msgs []message.Message) ([]message.Message, error) {
-        // Before model call
-        return msgs, nil
+    OnBeforeModel: func(ctx context.Context, st *middleware.State) error {
+        // Before model call; st.ModelInput holds the model.Request
+        return nil
     },
-    AfterModel: func(ctx context.Context, output *agent.ModelOutput) (*agent.ModelOutput, error) {
-        // After model call
-        return output, nil
+    OnAfterModel: func(ctx context.Context, st *middleware.State) error {
+        // After model call; st.ModelOutput holds the *model.Response
+        return nil
     },
-    BeforeTool: func(ctx context.Context, call *middleware.ToolCall) (*middleware.ToolCall, error) {
-        // Before tool execution
-        return call, nil
+    OnBeforeTool: func(ctx context.Context, st *middleware.State) error {
+        // Before tool execution; st.ToolCall holds the agent.ToolCall
+        return nil
     },
-    AfterTool: func(ctx context.Context, result *middleware.ToolResult) (*middleware.ToolResult, error) {
-        // After tool execution
-        return result, nil
+    OnAfterTool: func(ctx context.Context, st *middleware.State) error {
+        // After tool execution; st.ToolResult holds the agent.ToolResult
+        return nil
     },
 }
 ```

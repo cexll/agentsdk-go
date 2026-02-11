@@ -10,9 +10,13 @@
 - Agent 核心循环 + Tool 执行
 - Middleware（6 点拦截）
 - Hooks（Shell）
-- MCP（stdio/SSE）
+- MCP（stdio/SSE/Streamable）
 - Sandbox（FS/Network/Resource）
 - Runtime 扩展：Skills / Commands / Subagents / Tasks
+- 多模态支持 (text/image/document)
+- 多模型分层 (ModelPool + SubagentModelMapping)
+- 自动上下文压缩 (AutoCompact)
+- OpenTelemetry 追踪 (可选 build tag)
 
 ---
 
@@ -140,12 +144,12 @@
 - **与 Claude Code 的关系**: Claude Code 以 hooks 为主要扩展点；本项目额外提供可选的 in-process middleware，用于更细粒度的治理/可观测。
 
 #### 2.5.2 拦截点详解
-- `before_agent`: 会话入口前做租户/速率/审计初始化。
-- `before_model`: Prompt 组装前做上下文裁剪、敏感字段遮蔽。
-- `after_model`: 模型输出后做安全过滤、拒绝理由重写。
-- `before_tool`: 工具调用前校验白名单、参数 Schema、冷却时间。
-- `after_tool`: 结果回填前做降噪、结构化封装、观测指标打点。
-- `after_agent`: 对最终回复做格式化、用量上报、持久化。
+- `before_agent` (`StageBeforeAgent`): 会话入口前做租户/速率/审计初始化。
+- `before_model` (`StageBeforeModel`): Prompt 组装前做上下文裁剪、敏感字段遮蔽。
+- `after_model` (`StageAfterModel`): 模型输出后做安全过滤、拒绝理由重写。
+- `before_tool` (`StageBeforeTool`): 工具调用前校验白名单、参数 Schema、冷却时间。
+- `after_tool` (`StageAfterTool`): 结果回填前做降噪、结构化封装、观测指标打点。
+- `after_agent` (`StageAfterAgent`): 对最终回复做格式化、用量上报、持久化。
 
 #### 2.5.3 Chain 执行器（串行 + 短路 + 超时）
 - **串行执行**: `Chain.Execute` 逐个中间件调用，保持确定性顺序。
@@ -168,10 +172,11 @@ if err := chain.Execute(ctx, middleware.StageBeforeAgent, state); err != nil {
 state := &middleware.State{Agent: c, Values: map[string]any{}}
 _ = a.mw.Execute(ctx, middleware.StageBeforeAgent, state)
 _ = a.mw.Execute(ctx, middleware.StageBeforeModel, state)
-out, _ := a.model.Generate(ctx, c)
+out, _ := a.model.Generate(ctx, c) // agent.Model 接口
 state.ModelOutput = out
 _ = a.mw.Execute(ctx, middleware.StageAfterModel, state)
-// 工具调用前后同理
+// 工具调用前后同理 (StageBeforeTool / StageAfterTool)
+// 循环结束时 StageAfterAgent
 ```
 
 #### 2.5.4 使用场景
@@ -181,9 +186,11 @@ _ = a.mw.Execute(ctx, middleware.StageAfterModel, state)
 - **监控/告警**: `after_agent` 上报耗时、QPS、error rate，支持熔断/报警。
 
 #### 2.5.5 实现细节（集成点）
-- **状态传递**: `middleware.State` 贯穿 6 段，记录 `Agent Context`、`ModelOutput`、`ToolCall/Result` 与 `Values` 扩展字段。
+- **Middleware 接口**: `middleware.Middleware` 是一个接口，定义 `Name()` + 6 个 Hook 方法 (`BeforeAgent`/`BeforeModel`/`AfterModel`/`BeforeTool`/`AfterTool`/`AfterAgent`)。
+- **Funcs 辅助**: `middleware.Funcs` 结构体将函数指针转为 `Middleware` 接口实现，未指定的 Hook 默认 no-op。
+- **状态传递**: `middleware.State` 贯穿 6 段，记录 `Agent`、`ModelInput`、`ModelOutput`、`ToolCall`、`ToolResult` 与 `Values` 扩展字段（均为 `any` 类型，由调用方类型断言）。
 - **线程安全**: `Chain.Use` 内置写锁，运行时追加中间件不会破坏正在执行的链。
-- **零依赖 & 可预测**: 不引入反射/泛型，保持核心 <150 行；相比 Claude Code 的多 Hook 抽象，agentsdk-go 更符合 KISS。
+- **零依赖 & 可预测**: 不引入反射/泛型，保持核心简洁；相比 Claude Code 的多 Hook 抽象，agentsdk-go 更符合 KISS。
 
 ### 2.6 技术选型对比
 
@@ -218,124 +225,161 @@ _ = a.mw.Execute(ctx, middleware.StageAfterModel, state)
 - channel 传递数据
 - context 控制生命周期
 
-### 3.2 整体架构 (v0.4.0 实现)
+### 3.2 整体架构 (当前实现)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         agentsdk-go v0.4.0                       │
+│                         agentsdk-go                              │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  ┌────────────────────────────────────────────────────────────┐ │
-│  │  pkg/api - 统一入口层                                        │ │
+│  │  pkg/api - 统一入口层 (Runtime)                              │ │
 │  │  ├─ Runtime.Run(ctx, Request) -> Response                  │ │
 │  │  ├─ Runtime.RunStream(ctx, Request) -> <-chan StreamEvent  │ │
 │  │  ├─ Token 统计 & 自动 Compact                               │ │
-│  │  └─ OpenTelemetry 追踪 & UUID 标识                          │ │
+│  │  ├─ OpenTelemetry 追踪 & UUID 标识                          │ │
+│  │  ├─ Hooks 桥接 & 权限审批                                   │ │
+│  │  └─ 会话历史持久化                                          │ │
 │  └────────────────────────────────────────────────────────────┘ │
 │                              ↓                                   │
 │  ┌────────────────────────────────────────────────────────────┐ │
-│  │  pkg/agent - Agent 核心循环 (189 行)                         │ │
-│  │  ├─ Model.Generate() → Tool Calls → Execute → Loop         │ │
-│  │  ├─ MaxIterations 限制                                      │ │
-│  │  └─ Context 状态管理                                        │ │
+│  │  pkg/agent - Agent 核心循环 (190 行)                         │ │
+│  │  ├─ agent.Model.Generate() → Tool Calls → Execute → Loop  │ │
+│  │  ├─ MaxIterations 限制 & Timeout 保护                       │ │
+│  │  └─ Context 状态管理 (Values/ToolResults/Iteration)         │ │
 │  └────────────────────────────────────────────────────────────┘ │
 │                              ↓                                   │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │  pkg/middleware - 6 点拦截链                                 │ │
-│  │  ├─ BeforeAgent  → 请求验证、审计                           │ │
-│  │  ├─ BeforeModel  → Prompt 处理、上下文优化                   │ │
-│  │  ├─ AfterModel   → 结果过滤、安全检查                        │ │
-│  │  ├─ BeforeTool   → 工具参数校验                             │ │
-│  │  ├─ AfterTool    → 结果后处理                               │ │
-│  │  └─ AfterAgent   → 响应格式化、指标采集                      │ │
+│  │  ├─ Middleware 接口 (Name + 6 个 Hook 方法)                 │ │
+│  │  ├─ Funcs 辅助结构 (函数指针 → Middleware)                   │ │
+│  │  ├─ Chain 串行执行器 (短路 + 超时)                           │ │
+│  │  └─ State 跨中间件共享状态                                   │ │
 │  └────────────────────────────────────────────────────────────┘ │
 │                              ↓                                   │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │  pkg/model - 模型适配层                                      │ │
 │  │  ├─ Model 接口 (Complete / CompleteStream)                 │ │
+│  │  ├─ Provider 接口 (Model 工厂 + 缓存)                       │ │
 │  │  ├─ AnthropicProvider (Claude 系列)                        │ │
-│  │  ├─ ModelFactory 多模型支持                                 │ │
-│  │  └─ Token Usage 追踪                                        │ │
+│  │  ├─ OpenAIProvider (OpenAI / Azure / 兼容层)               │ │
+│  │  ├─ 多模态支持 (ContentBlock: text/image/document)          │ │
+│  │  └─ reasoning_content 透传 (thinking models)               │ │
 │  └────────────────────────────────────────────────────────────┘ │
 │                              ↓                                   │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │  pkg/tool - 工具系统                                         │ │
-│  │  ├─ Registry (工具注册表)                                   │ │
-│  │  ├─ Executor (沙箱执行)                                     │ │
-│  │  ├─ builtin/ (20+ 内置工具)                                 │ │
-│  │  │   ├─ bash (异步支持)    ├─ grep/glob                    │ │
-│  │  │   ├─ read/write/edit   ├─ web_fetch/search              │ │
-│  │  │   ├─ task/skill        └─ task_create                   │ │
-│  │  └─ MCP 集成 (stdio/SSE)                                    │ │
+│  │  ├─ Registry (工具注册表 + MCP 会话管理)                     │ │
+│  │  ├─ Executor (沙箱执行 + 权限解析 + 输出持久化)              │ │
+│  │  ├─ builtin/ (内置工具)                                     │ │
+│  │  │   ├─ bash (异步/流式)  ├─ grep/glob                     │ │
+│  │  │   ├─ read/write/edit   ├─ webfetch/websearch            │ │
+│  │  │   ├─ task/taskcreate   ├─ taskget/tasklist/taskupdate   │ │
+│  │  │   ├─ skill/slashcmd    ├─ killtask/bashstatus           │ │
+│  │  │   ├─ askuserquestion   └─ todo_write                    │ │
+│  │  └─ MCP 集成 (stdio/SSE/Streamable + 动态刷新)             │ │
 │  └────────────────────────────────────────────────────────────┘ │
 │                              ↓                                   │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │  支撑模块                                                    │ │
-│  │  ├─ pkg/config     - 配置加载 & Rules & 热重载              │ │
-│  │  ├─ pkg/message    - 消息历史 & LRU 会话缓存                 │ │
-│  │  ├─ pkg/core/hooks - Shell Hook 执行器                      │ │
-│  │  ├─ pkg/core/events - 事件总线                              │ │
-│  │  ├─ pkg/sandbox    - 文件系统隔离                           │ │
-│  │  ├─ pkg/security   - 命令校验 & 路径解析                     │ │
-│  │  ├─ pkg/mcp        - MCP 客户端                             │ │
+│  │  ├─ pkg/config      - 配置加载 & Rules & CLAUDE.md & FS 抽象│ │
+│  │  ├─ pkg/message     - 消息历史 & LRU 会话缓存 & Token 裁剪  │ │
+│  │  ├─ pkg/prompts     - 系统提示词组装 (skills/hooks/commands) │ │
+│  │  ├─ pkg/core/hooks  - Shell Hook 执行器 & 生命周期管理       │ │
+│  │  ├─ pkg/core/events - 事件总线 & 事件类型                    │ │
+│  │  ├─ pkg/core/middleware - Hook 中间件链                      │ │
+│  │  ├─ pkg/sandbox     - 文件系统 & 网络隔离                    │ │
+│  │  ├─ pkg/security    - 命令校验 & 路径解析 & 权限审批队列     │ │
+│  │  ├─ pkg/mcp         - MCP 客户端 (stdio/SSE/Streamable)    │ │
+│  │  └─ pkg/gitignore   - .gitignore 匹配器                     │ │
 │  └────────────────────────────────────────────────────────────┘ │
 │                              ↓                                   │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │  pkg/runtime - 运行时扩展                                    │ │
-│  │  ├─ skills/     - Skills 管理 (懒加载)                      │ │
-│  │  ├─ subagents/  - Subagent 编排                            │ │
-│  │  └─ commands/   - Slash Commands 解析                       │ │
+│  │  ├─ skills/     - Skills 管理 (懒加载 + Matcher)            │ │
+│  │  ├─ subagents/  - Subagent 编排 & 模型分层                  │ │
+│  │  ├─ commands/   - Slash Commands 解析 & 执行                │ │
+│  │  └─ tasks/      - Task 跟踪 & 依赖管理                      │ │
 │  └────────────────────────────────────────────────────────────┘ │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.3 目录结构 (v0.4.0 实际)
+### 3.3 目录结构 (当前实际)
 
 ```
 agentsdk-go/
 ├── pkg/                          # 核心包
 │   ├── api/                      # 统一 API 入口
-│   │   ├── agent.go              # Runtime 实现 (1284行)
+│   │   ├── agent.go              # Runtime 实现
 │   │   ├── options.go            # Options & Request & Response
-│   │   ├── stream.go             # StreamEvent 类型
+│   │   ├── stream.go             # StreamEvent 类型 (Anthropic 兼容 SSE)
 │   │   ├── compact.go            # 自动上下文压缩
+│   │   ├── compact_prompt.go     # 压缩提示词
 │   │   ├── stats.go              # Token 统计
-│   │   ├── otel.go               # OpenTelemetry 集成
-│   │   └── *_bridge.go           # 各模块桥接
+│   │   ├── progress.go           # 进度事件
+│   │   ├── rollout.go            # 功能灰度
+│   │   ├── otel.go / otel_*.go   # OpenTelemetry 集成 (build tag)
+│   │   ├── helpers.go            # 工具函数
+│   │   ├── request_helpers.go    # 请求辅助
+│   │   ├── runtime_helpers.go    # 运行时辅助 (含平台特定)
+│   │   ├── history_persistence.go # 会话历史持久化
+│   │   ├── hooks_bridge.go       # Hooks 桥接
+│   │   ├── mcp_bridge.go         # MCP 桥接
+│   │   ├── sandbox_bridge.go     # Sandbox 桥接
+│   │   ├── settings_bridge.go    # Settings 桥接
+│   │   └── claude_embed_hooks.go # 嵌入式 Hooks 物化
 │   │
 │   ├── agent/                    # Agent 核心循环
-│   │   ├── agent.go              # 核心循环 (189行)
-│   │   ├── context.go            # RunContext
-│   │   └── options.go            # Agent 配置
+│   │   ├── agent.go              # 核心循环 (190行)
+│   │   ├── context.go            # RunContext (Iteration/Values/ToolResults)
+│   │   └── options.go            # Agent 配置 (MaxIterations/Timeout/Middleware)
 │   │
 │   ├── middleware/               # 6 点拦截中间件
-│   │   ├── chain.go              # 中间件链执行器
-│   │   └── types.go              # Stage & State & Middleware 接口
+│   │   ├── chain.go              # 中间件链执行器 (串行+短路+超时)
+│   │   └── types.go              # Stage & State & Middleware 接口 & Funcs 辅助
 │   │
 │   ├── model/                    # 模型抽象层
-│   │   ├── interface.go          # Model 接口定义
+│   │   ├── interface.go          # Model 接口 (Complete/CompleteStream)
+│   │   │                         # Message, ContentBlock, ToolCall, Request, Response
 │   │   ├── anthropic.go          # Anthropic 适配器
-│   │   ├── provider.go           # ModelFactory & Provider
-│   │   └── options.go            # 模型配置选项
+│   │   ├── openai.go             # OpenAI 适配器
+│   │   ├── openai_responses.go   # OpenAI Responses API
+│   │   ├── provider.go           # Provider 接口 & AnthropicProvider & OpenAIProvider
+│   │   ├── stream_wrapper.go     # 流式包装器
+│   │   └── middleware_state.go   # 中间件状态上下文键
 │   │
 │   ├── tool/                     # 工具系统
 │   │   ├── tool.go               # Tool 接口
-│   │   ├── registry.go           # 工具注册表
-│   │   ├── executor.go           # 工具执行器
+│   │   ├── registry.go           # 工具注册表 + MCP 会话管理
+│   │   ├── executor.go           # 工具执行器 (沙箱+权限+持久化)
 │   │   ├── schema.go             # JSON Schema
-│   │   └── builtin/              # 内置工具 (20+)
-│   │       ├── bash.go           # Bash (支持异步)
+│   │   └── builtin/              # 内置工具
+│   │       ├── bash.go           # Bash (支持异步/流式)
+│   │       ├── bash_stream.go    # Bash 流式输出
+│   │       ├── bash_unix.go      # Unix 平台特定
+│   │       ├── bash_windows.go   # Windows 平台特定
+│   │       ├── bashoutput.go     # Bash 输出处理
+│   │       ├── bashstatus.go     # Bash 状态查询
 │   │       ├── async_manager.go  # 异步任务管理
 │   │       ├── read.go           # 文件读取
 │   │       ├── write.go          # 文件写入
 │   │       ├── edit.go           # 文件编辑
-│   │       ├── grep.go           # 内容搜索
+│   │       ├── grep.go           # 内容搜索 (含上下文/分页)
 │   │       ├── glob.go           # 文件匹配
 │   │       ├── task.go           # Subagent 任务
+│   │       ├── taskcreate.go     # 任务创建
+│   │       ├── taskget.go        # 任务查询
+│   │       ├── tasklist.go       # 任务列表
+│   │       ├── taskupdate.go     # 任务更新
+│   │       ├── killtask.go       # 终止任务
 │   │       ├── skill.go          # Skills 执行
+│   │       ├── slashcommand.go   # Slash 命令执行
+│   │       ├── askuserquestion.go # 用户交互
 │   │       ├── webfetch.go       # Web 内容获取
-│   │       └── ...
+│   │       ├── websearch.go      # Web 搜索
+│   │       ├── todo_write.go     # TodoWrite 工具
+│   │       └── file_sandbox.go   # 文件沙箱辅助
 │   │
 │   ├── message/                  # 消息历史
 │   │   ├── history.go            # History 管理
@@ -345,32 +389,67 @@ agentsdk-go/
 │   ├── config/                   # 配置管理
 │   │   ├── settings_loader.go    # 配置加载
 │   │   ├── settings_types.go     # 配置类型定义
+│   │   ├── settings_merge.go     # 配置合并
+│   │   ├── hooks_unmarshal.go    # Hooks 反序列化
 │   │   ├── rules.go              # .claude/rules/ 加载
+│   │   ├── claude_md.go          # CLAUDE.md 加载
+│   │   ├── fs.go                 # 文件系统抽象 (OS + EmbedFS)
 │   │   └── validator.go          # 配置校验
+│   │
+│   ├── prompts/                  # 系统提示词
+│   │   ├── prompts.go            # 提示词组装
+│   │   ├── skills.go             # Skills 提示词
+│   │   ├── hooks.go              # Hooks 提示词
+│   │   ├── commands.go           # Commands 提示词
+│   │   └── subagents.go          # Subagents 提示词
 │   │
 │   ├── core/                     # 核心扩展
 │   │   ├── events/               # 事件总线
 │   │   │   ├── bus.go            # EventBus
-│   │   │   └── types.go          # Event 类型
+│   │   │   └── types.go          # Event 类型 & Payload 定义
 │   │   ├── hooks/                # Hooks 系统
 │   │   │   ├── executor.go       # Shell Hook 执行
-│   │   │   └── types.go          # Hook 类型
-│   │   └── middleware/           # OpenTelemetry 中间件
+│   │   │   └── lifecycle.go      # 生命周期管理
+│   │   └── middleware/           # Hook 中间件链
+│   │       └── chain.go          # 中间件链
 │   │
 │   ├── runtime/                  # 运行时扩展
 │   │   ├── skills/               # Skills 管理
+│   │   │   ├── registry.go       # Skills 注册表
+│   │   │   ├── loader.go         # 懒加载器
+│   │   │   └── matcher.go        # 激活匹配器
 │   │   ├── subagents/            # Subagent 管理
-│   │   └── commands/             # Slash Commands
+│   │   │   ├── manager.go        # Subagent 管理器
+│   │   │   ├── loader.go         # 定义加载
+│   │   │   └── context.go        # Subagent 上下文
+│   │   ├── commands/             # Slash Commands
+│   │   │   ├── executor.go       # 命令执行器
+│   │   │   ├── loader.go         # 命令加载
+│   │   │   └── parser.go         # 命令解析
+│   │   └── tasks/                # Task 系统
+│   │       ├── task.go           # Task 定义
+│   │       ├── store.go          # Task 存储
+│   │       └── dependency.go     # 依赖管理
 │   │
 │   ├── mcp/                      # MCP 客户端
-│   │   └── mcp.go                # stdio/SSE 支持
+│   │   └── mcp.go                # stdio/SSE/Streamable 支持
 │   │
 │   ├── sandbox/                  # 沙箱隔离
-│   │   └── manager.go            # 文件系统限制
+│   │   ├── interface.go          # Manager 接口
+│   │   ├── fs_policy.go          # 文件系统策略
+│   │   └── net_policy.go         # 网络策略
 │   │
-│   └── security/                 # 安全模块
-│       ├── validator.go          # 命令校验
-│       └── resolver.go           # 路径解析
+│   ├── security/                 # 安全模块
+│   │   ├── validator.go          # 命令校验
+│   │   ├── resolver.go           # 路径解析
+│   │   ├── resolver_unix.go      # Unix 路径解析
+│   │   ├── resolver_windows.go   # Windows 路径解析
+│   │   ├── permission_matcher.go # 权限匹配 (allow/deny/ask)
+│   │   ├── sandbox.go            # 沙箱安全策略
+│   │   └── approval.go           # 审批队列 & 会话白名单
+│   │
+│   └── gitignore/                # Gitignore 支持
+│       └── matcher.go            # .gitignore 模式匹配
 │
 ├── cmd/cli/                      # CLI 入口
 │   └── main.go
@@ -381,7 +460,13 @@ agentsdk-go/
 │   ├── 03-http/                  # HTTP 服务
 │   ├── 04-advanced/              # 完整功能
 │   ├── 05-custom-tools/          # 自定义工具
-│   └── 05-multimodel/            # 多模型
+│   ├── 06-embed/                 # 嵌入式 FS
+│   ├── 07-multimodel/            # 多模型
+│   ├── 08-askuserquestion/       # 用户交互
+│   ├── 09-task-system/           # Task 系统
+│   ├── 10-hooks/                 # Hooks 示例
+│   ├── 11-reasoning/             # 推理模型
+│   └── 12-multimodal/            # 多模态
 │
 ├── test/                         # 测试
 │   ├── integration/              # 集成测试
@@ -399,152 +484,115 @@ agentsdk-go/
 
 ### 3.4 核心接口设计
 
-#### 3.4.1 Agent 接口
+#### 3.4.1 Agent 核心循环
+
+Agent 核心循环位于 `pkg/agent/agent.go`，采用结构体而非接口设计：
 
 ```go
 // pkg/agent/agent.go
 package agent
 
-import (
-    "context"
-    "time"
-)
-
-// Agent 是核心接口，提供最小化 API
-type Agent interface {
-    // Run 执行单次对话，阻塞直到完成
-    Run(ctx context.Context, input string) (*RunResult, error)
-
-    // RunStream 流式执行，通过 channel 返回事件
-    RunStream(ctx context.Context, input string) (<-chan Event, error)
-
-    // AddTool 注册工具
-    AddTool(tool Tool) error
-
-    // WithHook 添加生命周期钩子
-    WithHook(hook Hook) Agent
+// Model 是 agent 层的模型接口，由 api 层适配 model.Model
+type Model interface {
+    Generate(ctx context.Context, c *Context) (*ModelOutput, error)
 }
 
-// RunContext 运行上下文配置
-type RunContext struct {
-    SessionID      string        // 会话 ID
-    WorkDir        string        // 工作目录
-    MaxIterations  int           // 最大迭代次数
-    MaxTokens      int           // 最大 token 数
-    Timeout        time.Duration // 超时时间
-    ApprovalMode   ApprovalMode  // 审批模式
-    Temperature    float64       // 模型温度
+// ToolExecutor 执行模型发出的工具调用
+type ToolExecutor interface {
+    Execute(ctx context.Context, call ToolCall, c *Context) (ToolResult, error)
 }
 
-// RunResult 运行结果
-type RunResult struct {
-    Output     string      // 输出文本
-    ToolCalls  []ToolCall  // 工具调用记录
-    Usage      TokenUsage  // Token 使用情况
-    StopReason string      // 停止原因
-    Events     []Event     // 事件列表
+// Agent 驱动核心循环，串联 middleware、model、tools
+type Agent struct {
+    model Model
+    tools ToolExecutor
+    opts  Options
+    mw    *middleware.Chain
 }
 
-// TokenUsage Token 使用统计
-type TokenUsage struct {
-    InputTokens  int
-    OutputTokens int
-    TotalTokens  int
-    CacheTokens  int // Prompt Caching
+// New 构造 Agent
+func New(model Model, tools ToolExecutor, opts Options) (*Agent, error)
+
+// Run 执行 agent 循环，直到模型返回最终输出、context 取消或出错
+func (a *Agent) Run(ctx context.Context, c *Context) (*ModelOutput, error)
+```
+
+**注意**: `agent.Model` 接口使用 `Generate` 方法，这是 agent 层的内部抽象。
+外部 `model.Model` 接口使用 `Complete/CompleteStream`，由 `pkg/api` 层负责适配。
+
+```go
+// pkg/agent/context.go
+type Context struct {
+    Iteration       int
+    StartedAt       time.Time
+    Values          map[string]any
+    ToolResults     []ToolResult
+    LastModelOutput *ModelOutput
 }
 
-// ApprovalMode 审批模式
-type ApprovalMode int
-
-const (
-    ApprovalNone     ApprovalMode = iota // 无需审批
-    ApprovalRequired                      // 全部需要审批
-    ApprovalAuto                          // 会话内自动审批
-)
+// pkg/agent/options.go
+type Options struct {
+    MaxIterations int
+    Timeout       time.Duration
+    Middleware    *middleware.Chain
+}
 ```
 
 #### 3.4.2 事件系统
 
 ```go
-// pkg/event/event.go
-package event
+// pkg/core/events/types.go
+package events
 
-import "time"
-
-// EventType 事件类型
 type EventType string
 
 const (
-    // Progress 通道事件
-    EventProgress      EventType = "progress"       // 进度更新
-    EventThinking      EventType = "thinking"       // 思考过程
-    EventToolCall      EventType = "tool_call"      // 工具调用
-    EventToolResult    EventType = "tool_result"    // 工具结果
-
-    // Control 通道事件
-    EventApprovalReq   EventType = "approval_req"   // 审批请求
-    EventApprovalResp  EventType = "approval_resp"  // 审批响应
-    EventInterrupt     EventType = "interrupt"      // 中断请求
-    EventResume        EventType = "resume"         // 恢复执行
-
-    // Monitor 通道事件
-    EventMetrics       EventType = "metrics"        // 指标上报
-    EventAudit         EventType = "audit"          // 审计日志
-    EventError         EventType = "error"          // 错误事件
+    PreToolUse         EventType = "PreToolUse"
+    PostToolUse        EventType = "PostToolUse"
+    PostToolUseFailure EventType = "PostToolUseFailure"
+    PreCompact         EventType = "PreCompact"
+    ContextCompacted   EventType = "ContextCompacted"
+    UserPromptSubmit   EventType = "UserPromptSubmit"
+    SessionStart       EventType = "SessionStart"
+    SessionEnd         EventType = "SessionEnd"
+    Stop               EventType = "Stop"
+    SubagentStart      EventType = "SubagentStart"
+    SubagentStop       EventType = "SubagentStop"
+    Notification       EventType = "Notification"
+    TokenUsage         EventType = "TokenUsage"
+    PermissionRequest  EventType = "PermissionRequest"
+    ModelSelected      EventType = "ModelSelected"
+    MCPToolsChanged    EventType = "MCPToolsChanged"
 )
 
-// Event 事件定义
+// Event 轻量级事件结构
 type Event struct {
-    ID        string                 // 事件 ID
-    Type      EventType              // 事件类型
-    Timestamp time.Time              // 时间戳
-    SessionID string                 // 会话 ID
-    Data      interface{}            // 事件数据
-    Bookmark  *Bookmark              // 断点标记
-}
-
-// Bookmark 断点续播标记
-type Bookmark struct {
-    ID       string    // 断点 ID
-    Position int64     // WAL 位置
-    State    []byte    // 状态快照
-}
-
-// EventBus 三通道事件总线
-type EventBus struct {
-    progress chan<- Event  // Progress 通道
-    control  chan<- Event  // Control 通道
-    monitor  chan<- Event  // Monitor 通道
-}
-
-// NewEventBus 创建事件总线
-func NewEventBus(
-    progress chan<- Event,
-    control chan<- Event,
-    monitor chan<- Event,
-) *EventBus {
-    return &EventBus{
-        progress: progress,
-        control:  control,
-        monitor:  monitor,
-    }
-}
-
-// Emit 发送事件到对应通道
-func (b *EventBus) Emit(event Event) error {
-    switch event.Type {
-    case EventProgress, EventThinking, EventToolCall, EventToolResult:
-        b.progress <- event
-    case EventApprovalReq, EventApprovalResp, EventInterrupt, EventResume:
-        b.control <- event
-    case EventMetrics, EventAudit, EventError:
-        b.monitor <- event
-    default:
-        return fmt.Errorf("unknown event type: %s", event.Type)
-    }
-    return nil
+    ID        string
+    Type      EventType
+    Timestamp time.Time
+    SessionID string
+    RequestID string
+    Payload   interface{} // 类型断言获取具体 Payload
 }
 ```
+
+```go
+// pkg/core/events/bus.go
+// Bus 基于 Pub/Sub 模式，单 dispatch loop 保序，per-subscriber 队列隔离
+type Bus struct { ... }
+
+func NewBus(opts ...BusOption) *Bus
+func (b *Bus) Publish(evt Event) error
+func (b *Bus) Subscribe(t EventType, handler Handler, opts ...SubscriptionOption) func()
+func (b *Bus) Close()
+```
+
+**设计要点**:
+- 单 dispatch loop 保证事件顺序
+- per-subscriber 缓冲队列防止慢消费者阻塞
+- LRU 去重窗口 (可选)
+- panic 隔离：subscriber panic 不影响其他订阅者
+- 支持 per-event 超时 (`WithSubscriptionTimeout`)
 
 #### 3.4.3 工具系统
 
@@ -552,639 +600,193 @@ func (b *EventBus) Emit(event Event) error {
 // pkg/tool/tool.go
 package tool
 
-import (
-    "context"
-    "encoding/json"
-    "fmt"
-)
-
 // Tool 工具接口
 type Tool interface {
-    // Name 返回工具名称
     Name() string
-
-    // Description 返回工具描述
     Description() string
-
-    // Schema 返回参数 JSON Schema
     Schema() *JSONSchema
-
-    // Execute 执行工具
     Execute(ctx context.Context, params map[string]interface{}) (*ToolResult, error)
-}
-
-// JSONSchema 工具参数 schema
-type JSONSchema struct {
-    Type       string                 `json:"type"`
-    Properties map[string]interface{} `json:"properties"`
-    Required   []string               `json:"required"`
 }
 
 // ToolResult 工具执行结果
 type ToolResult struct {
-    Success bool        // 是否成功
-    Output  string      // 输出内容
-    Data    interface{} // 结构化数据
-    Error   error       // 错误信息
-}
-
-// Registry 工具注册表
-type Registry struct {
-    tools     map[string]Tool
-    mcpClient *mcp.Client
-    validator Validator  // 新增：参数校验器
-}
-
-// Validator 工具参数校验器 (借鉴 agentsdk)
-type Validator interface {
-    // Validate 校验参数是否符合 schema
-    Validate(params map[string]interface{}, schema *JSONSchema) error
-}
-
-// DefaultValidator JSON Schema 校验器
-type DefaultValidator struct{}
-
-// Validate 实现参数校验
-func (v *DefaultValidator) Validate(params map[string]interface{}, schema *JSONSchema) error {
-    // 1. 检查 required 字段
-    for _, field := range schema.Required {
-        if _, exists := params[field]; !exists {
-            return fmt.Errorf("missing required field: %s", field)
-        }
-    }
-
-    // 2. 检查字段类型（简化版）
-    for key, value := range params {
-        propSchema, exists := schema.Properties[key]
-        if !exists {
-            continue // 允许额外字段
-        }
-
-        // 类型检查逻辑
-        expectedType := propSchema.(map[string]interface{})["type"].(string)
-        if err := validateType(value, expectedType); err != nil {
-            return fmt.Errorf("field %s: %w", key, err)
-        }
-    }
-
-    return nil
-}
-
-// NewRegistry 创建注册表
-func NewRegistry() *Registry {
-    return &Registry{
-        tools:     make(map[string]Tool),
-        validator: &DefaultValidator{},
-    }
-}
-
-// Register 注册工具
-func (r *Registry) Register(tool Tool) error {
-    if _, exists := r.tools[tool.Name()]; exists {
-        return fmt.Errorf("tool %s already registered", tool.Name())
-    }
-    r.tools[tool.Name()] = tool
-    return nil
-}
-
-// Get 获取工具
-func (r *Registry) Get(name string) (Tool, error) {
-    tool, exists := r.tools[name]
-    if !exists {
-        return nil, fmt.Errorf("tool %s not found", name)
-    }
-    return tool, nil
-}
-
-// List 列出所有工具
-func (r *Registry) List() []Tool {
-    tools := make([]Tool, 0, len(r.tools))
-    for _, tool := range r.tools {
-        tools = append(tools, tool)
-    }
-    return tools
-}
-
-// Execute 执行工具前先做参数校验
-func (r *Registry) Execute(ctx context.Context, name string, params map[string]interface{}) (*ToolResult, error) {
-    tool, err := r.Get(name)
-    if err != nil {
-        return nil, err
-    }
-
-    schema := tool.Schema()
-    if schema != nil && r.validator != nil {
-        if err := r.validator.Validate(params, schema); err != nil {
-            return nil, fmt.Errorf("tool %s validation failed: %w", name, err)
-        }
-    }
-
-    return tool.Execute(ctx, params)
+    Success bool
+    Output  string
+    Data    interface{}
+    Error   error
 }
 ```
-
-#### 3.4.4 会话持久化
 
 ```go
-// pkg/session/session.go
-package session
-
-import (
-    "context"
-    "time"
-)
-
-// Session 会话接口
-type Session interface {
-    // Append 追加消息
-    Append(msg Message) error
-
-    // List 列出消息
-    List(filter Filter) ([]Message, error)
-
-    // Checkpoint 创建检查点
-    Checkpoint(name string) error
-
-    // Resume 恢复到检查点
-    Resume(name string) (*Session, error)
-
-    // Fork 从检查点创建分支
-    Fork(name string) (*Session, error)
-
-    // Close 关闭会话
-    Close() error
+// pkg/tool/registry.go
+// Registry 线程安全的工具注册表，支持 MCP 会话管理
+type Registry struct {
+    tools       map[string]Tool
+    mcpSessions []*mcpSessionInfo
+    validator   Validator
 }
 
-// Message 消息定义
-type Message struct {
-    ID        string      // 消息 ID
-    Role      string      // 角色 (user/assistant/system)
-    Content   string      // 内容
-    ToolCalls []ToolCall  // 工具调用
-    Timestamp time.Time   // 时间戳
-}
-
-// Filter 消息过滤器
-type Filter struct {
-    StartTime *time.Time
-    EndTime   *time.Time
-    Role      string
-    Limit     int
-    Offset    int
-}
-
-// Backend 存储后端接口 (借鉴 agentsdk)
-type Backend interface {
-    // Read 读取数据
-    Read(path string) ([]byte, error)
-
-    // Write 写入数据
-    Write(path string, data []byte) error
-
-    // List 列出路径
-    List(prefix string) ([]string, error)
-
-    // Delete 删除数据
-    Delete(path string) error
-}
-
-// CompositeBackend 组合后端 - 路径级路由
-type CompositeBackend struct {
-    routes map[string]Backend  // path prefix → backend
-    mu     sync.RWMutex
-}
-
-// NewCompositeBackend 创建组合后端
-func NewCompositeBackend() *CompositeBackend {
-    return &CompositeBackend{
-        routes: make(map[string]Backend),
-    }
-}
-
-// AddRoute 添加路由规则
-// 例如: AddRoute("/sessions", fileBackend)
-//       AddRoute("/cache", memoryBackend)
-func (b *CompositeBackend) AddRoute(prefix string, backend Backend) {
-    b.mu.Lock()
-    defer b.mu.Unlock()
-    b.routes[prefix] = backend
-}
-
-// Route 根据路径选择后端 (最长前缀匹配)
-func (b *CompositeBackend) Route(path string) Backend {
-    b.mu.RLock()
-    defer b.mu.RUnlock()
-
-    var matched Backend
-    var maxLen int
-
-    for prefix, backend := range b.routes {
-        if strings.HasPrefix(path, prefix) && len(prefix) > maxLen {
-            matched = backend
-            maxLen = len(prefix)
-        }
-    }
-
-    return matched
-}
-
-// Read 读取数据 (自动路由)
-func (b *CompositeBackend) Read(path string) ([]byte, error) {
-    backend := b.Route(path)
-    if backend == nil {
-        return nil, fmt.Errorf("no backend for path: %s", path)
-    }
-    return backend.Read(path)
-}
-
-// Write 写入数据 (自动路由)
-func (b *CompositeBackend) Write(path string, data []byte) error {
-    backend := b.Route(path)
-    if backend == nil {
-        return fmt.Errorf("no backend for path: %s", path)
-    }
-    return backend.Write(path, data)
-}
-
-// 这样可以实现：
-// - `/sessions/*` 走文件系统 (持久化)
-// - `/cache/*` 走内存 (快速访问)
-// - `/checkpoints/*` 走 S3/OSS (长期存档)
-
-// FileSession 文件存储会话实现
-type FileSession struct {
-    id         string
-    dir        string
-    wal        *WAL            // Write-Ahead Log
-    buffer     *EventBuffer    // 事件缓冲
-    summarizer *Summarizer     // 自动摘要
-}
-
-// NewFileSession 创建文件会话
-func NewFileSession(id string, dir string) (*FileSession, error) {
-    wal, err := NewWAL(filepath.Join(dir, id, "wal.log"))
-    if err != nil {
-        return nil, err
-    }
-
-    return &FileSession{
-        id:         id,
-        dir:        dir,
-        wal:        wal,
-        buffer:     NewEventBuffer(1000),
-        summarizer: NewSummarizer(50000), // 50k token 触发摘要
-    }, nil
-}
+func NewRegistry() *Registry
+func (r *Registry) Register(tool Tool) error
+func (r *Registry) Get(name string) (Tool, error)
+func (r *Registry) List() []Tool
+func (r *Registry) Execute(ctx context.Context, name string, params map[string]interface{}) (*ToolResult, error)
+func (r *Registry) RegisterMCPServer(ctx context.Context, serverPath, serverName string) error
+func (r *Registry) RegisterMCPServerWithOptions(ctx context.Context, serverPath, serverName string, opts MCPServerOptions) error
+func (r *Registry) Close()
 ```
+
+```go
+// pkg/tool/executor.go
+// Executor 串联 Registry + Sandbox + 权限解析 + 输出持久化
+type Executor struct {
+    registry  *Registry
+    sandbox   *sandbox.Manager
+    persister *OutputPersister
+    permCheck PermissionResolver
+}
+
+func NewExecutor(registry *Registry, sb *sandbox.Manager) *Executor
+func (e *Executor) Execute(ctx context.Context, call Call) (*CallResult, error)
+func (e *Executor) ExecuteAll(ctx context.Context, calls []Call) []CallResult
+func (e *Executor) WithSandbox(sb *sandbox.Manager) *Executor
+func (e *Executor) WithPermissionResolver(resolver PermissionResolver) *Executor
+func (e *Executor) WithOutputPersister(persister *OutputPersister) *Executor
+```
+
+#### 3.4.4 消息历史与会话管理
+
+```go
+// pkg/message/history.go
+// History 管理 per-session 消息历史，支持 LRU 淘汰
+type History struct { ... }
+
+func NewHistory(maxSessions int) *History
+func (h *History) Append(sessionID string, msg model.Message)
+func (h *History) List(sessionID string) []model.Message
+func (h *History) Clear(sessionID string)
+```
+
+```go
+// pkg/message/converter.go
+// 在 model.Message 与 agent 内部格式之间转换
+
+// pkg/message/trimmer.go
+// Token 裁剪：当消息历史超过 token 预算时自动截断
+```
+
+```go
+// pkg/api/history_persistence.go
+// 磁盘持久化：将会话历史写入 .claude/ 目录
+// 支持 session 恢复和跨进程共享
+```
+
+**设计要点**:
+- LRU 淘汰策略 (通过 `MaxSessions` 配置)
+- per-session 隔离，线程安全
+- Token 裁剪防止上下文溢出
+- 可选磁盘持久化 (api 层)
 
 #### 3.4.5 安全系统
 
+安全系统分布在 `pkg/security/` 和 `pkg/sandbox/` 两个包中：
+
 ```go
-// pkg/security/sandbox.go
-package security
+// pkg/security/validator.go - 命令校验器
+// 阻止危险命令: dd, mkfs, fdisk, shutdown, reboot 等
+// 模式检测: rm -rf, rmdir 等危险操作
+// 可配置: CLI 场景可允许 shell 元字符
 
-import (
-    "path/filepath"
-    "os"
-)
+// pkg/security/resolver.go - 路径解析器
+// 符号链接解析，防止路径穿越
+// 平台特定实现 (resolver_unix.go / resolver_windows.go)
 
-// Sandbox 路径沙箱
-type Sandbox struct {
-    allowList []string      // 路径白名单
-    validator *Validator    // 命令校验器
-    resolver  *PathResolver // 路径解析器
+// pkg/security/permission_matcher.go - 权限匹配
+// 支持 allow/deny/ask 三种决策
+// 基于 glob 模式匹配工具名和参数
+
+// pkg/security/approval.go - 审批队列
+// ApprovalQueue: 持久化权限决策
+// 会话白名单 (TTL 控制)
+// ApprovalRecord: 记录审批历史
+
+// pkg/security/sandbox.go - 沙箱安全策略
+// 整合路径校验 + 命令校验 + 权限匹配
+```
+
+```go
+// pkg/sandbox/ - 沙箱隔离
+// interface.go - Manager 接口 (CheckToolPermission/Enforce)
+// fs_policy.go - 文件系统策略 (路径白名单)
+// net_policy.go - 网络策略 (域名白名单)
+```
+
+**三层防御**:
+1. **路径白名单** - `sandbox.Manager` 限制文件系统访问范围
+2. **符号链接解析** - `security.Resolver` 防止路径穿越
+3. **命令校验** - `security.Validator` 阻止危险命令
+4. **权限审批** - `security.ApprovalQueue` 支持 HITL 审批流程
+
+#### 3.4.6 统一 API 层
+
+`pkg/api` 是面向用户的统一入口，封装了所有底层模块：
+
+```go
+// pkg/api/agent.go
+type Runtime struct { ... }
+
+func New(ctx context.Context, opts Options) (*Runtime, error)
+func (r *Runtime) Run(ctx context.Context, req Request) (*Response, error)
+func (r *Runtime) RunStream(ctx context.Context, req Request) (<-chan StreamEvent, error)
+func (r *Runtime) Close() error
+```
+
+```go
+// pkg/api/options.go
+type Options struct {
+    EntryPoint        EntryPoint        // cli / ci / platform
+    ProjectRoot       string
+    EmbedFS           fs.FS             // 可选嵌入文件系统
+    Model             model.Model
+    ModelFactory      ModelFactory
+    ModelPool         map[ModelTier]model.Model  // 分层模型池
+    SystemPrompt      string
+    Middleware        []middleware.Middleware
+    Tools             []tool.Tool
+    EnabledBuiltinTools []string        // 内置工具白名单
+    DisallowedTools   []string          // 工具黑名单
+    CustomTools       []tool.Tool       // 自定义工具
+    TypedHooks        []corehooks.ShellHook
+    Skills            []SkillRegistration
+    Commands          []CommandRegistration
+    Subagents         []SubagentRegistration
+    Sandbox           SandboxOptions
+    AutoCompact       CompactConfig
+    OTEL              OTELConfig
+    // ... 更多选项
 }
 
-// NewSandbox 创建沙箱
-func NewSandbox(workDir string) *Sandbox {
-    return &Sandbox{
-        allowList: []string{workDir},
-        validator: NewValidator(),
-        resolver:  NewPathResolver(),
-    }
-}
-
-// ValidatePath 验证路径安全性
-func (s *Sandbox) ValidatePath(path string) error {
-    // 1. 解析符号链接 (fix mini-claude-code-go bug)
-    resolved, err := s.resolver.Resolve(path)
-    if err != nil {
-        return fmt.Errorf("resolve path failed: %w", err)
-    }
-
-    // 2. 规范化路径
-    abs, err := filepath.Abs(resolved)
-    if err != nil {
-        return fmt.Errorf("abs path failed: %w", err)
-    }
-
-    // 3. 检查白名单前缀
-    allowed := false
-    for _, prefix := range s.allowList {
-        if strings.HasPrefix(abs, prefix) {
-            allowed = true
-            break
-        }
-    }
-    if !allowed {
-        return fmt.Errorf("path %s not in allowlist", abs)
-    }
-
-    return nil
-}
-
-// ValidateCommand 验证命令安全性
-func (s *Sandbox) ValidateCommand(cmd string) error {
-    return s.validator.Validate(cmd)
-}
-
-// PathResolver 路径解析器 (处理符号链接)
-type PathResolver struct{}
-
-// Resolve 解析路径，跟随符号链接
-func (r *PathResolver) Resolve(path string) (string, error) {
-    // 使用 O_NOFOLLOW 检测符号链接
-    info, err := os.Lstat(path)
-    if err != nil {
-        return "", err
-    }
-
-    if info.Mode()&os.ModeSymlink != 0 {
-        // 是符号链接，读取目标
-        target, err := os.Readlink(path)
-        if err != nil {
-            return "", err
-        }
-        return target, nil
-    }
-
-    return path, nil
-}
-
-// Validator 命令校验器
-type Validator struct {
-    dangerousCommands []string
-    dangerousArgs     []string
-}
-
-// NewValidator 创建校验器
-func NewValidator() *Validator {
-    return &Validator{
-        dangerousCommands: []string{
-            "rm", "rmdir", "dd", "mkfs",
-            "format", "fdisk", "parted",
-        },
-        dangerousArgs: []string{
-            "-rf", "--no-preserve-root",
-            "--force", "/dev/",
-        },
-    }
-}
-
-// Validate 校验命令
-func (v *Validator) Validate(cmd string) error {
-    // 解析命令 (fix Kode-cli BashTool bug)
-    parts, err := shellquote.Split(cmd)
-    if err != nil {
-        return fmt.Errorf("parse command failed: %w", err)
-    }
-
-    if len(parts) == 0 {
-        return fmt.Errorf("empty command")
-    }
-
-    // 检查危险命令
-    baseCmd := filepath.Base(parts[0])
-    for _, dangerous := range v.dangerousCommands {
-        if baseCmd == dangerous {
-            return fmt.Errorf("dangerous command: %s", dangerous)
-        }
-    }
-
-    // 检查危险参数
-    cmdStr := strings.Join(parts, " ")
-    for _, dangerous := range v.dangerousArgs {
-        if strings.Contains(cmdStr, dangerous) {
-            return fmt.Errorf("dangerous argument: %s", dangerous)
-        }
-    }
-
-    return nil
+type Request struct {
+    Prompt            string
+    ContentBlocks     []model.ContentBlock  // 多模态内容
+    SessionID         string
+    RequestID         string
+    Model             ModelTier             // 可选模型层级覆盖
+    EnablePromptCache *bool
+    ToolWhitelist     []string
+    TargetSubagent    string
+    // ... 更多字段
 }
 ```
 
-#### 3.4.6 评估系统
-
-```go
-// pkg/evals/evals.go
-package evals
-
-import (
-    "fmt"
-    "strings"
-)
-
-// Evaluator 评估器接口 (借鉴 agentsdk)
-type Evaluator interface {
-    // EvaluateKeyword 关键词匹配评估
-    EvaluateKeyword(output, expected string) float64
-
-    // EvaluateSimilarity 相似度评估
-    EvaluateSimilarity(output, expected string) float64
-
-    // Evaluate 综合评估
-    Evaluate(output string, criteria *EvalCriteria) (*EvalResult, error)
-}
-
-// EvalCriteria 评估标准
-type EvalCriteria struct {
-    Keywords   []string  // 必须包含的关键词
-    Exclude    []string  // 必须排除的关键词
-    MinLength  int       // 最小长度
-    MaxLength  int       // 最大长度
-    Similarity float64   // 相似度阈值 (0-1)
-    Reference  string    // 参考答案
-}
-
-// EvalResult 评估结果
-type EvalResult struct {
-    Score      float64            // 综合得分 (0-1)
-    Passed     bool               // 是否通过
-    Details    map[string]float64 // 各项得分
-    Reason     string             // 未通过原因
-}
-
-// LocalEvaluator 本地评估器 (无需 LLM)
-type LocalEvaluator struct{}
-
-// NewLocalEvaluator 创建本地评估器
-func NewLocalEvaluator() *LocalEvaluator {
-    return &LocalEvaluator{}
-}
-
-// EvaluateKeyword 关键词匹配评估
-func (e *LocalEvaluator) EvaluateKeyword(output, expected string) float64 {
-    keywords := strings.Fields(expected)
-    matched := 0
-
-    outputLower := strings.ToLower(output)
-    for _, kw := range keywords {
-        if strings.Contains(outputLower, strings.ToLower(kw)) {
-            matched++
-        }
-    }
-
-    if len(keywords) == 0 {
-        return 1.0
-    }
-    return float64(matched) / float64(len(keywords))
-}
-
-// EvaluateSimilarity 相似度评估 (Jaccard 系数)
-func (e *LocalEvaluator) EvaluateSimilarity(output, expected string) float64 {
-    outputWords := tokenize(output)
-    expectedWords := tokenize(expected)
-
-    intersection := intersect(outputWords, expectedWords)
-    union := union(outputWords, expectedWords)
-
-    if len(union) == 0 {
-        return 1.0
-    }
-    return float64(len(intersection)) / float64(len(union))
-}
-
-// Evaluate 综合评估
-func (e *LocalEvaluator) Evaluate(output string, criteria *EvalCriteria) (*EvalResult, error) {
-    if criteria == nil {
-        return nil, fmt.Errorf("criteria is nil")
-    }
-
-    result := &EvalResult{
-        Details: make(map[string]float64),
-    }
-
-    // 1. 长度检查
-    length := len(output)
-    if criteria.MinLength > 0 && length < criteria.MinLength {
-        result.Passed = false
-        result.Reason = fmt.Sprintf("output too short: %d < %d", length, criteria.MinLength)
-        return result, nil
-    }
-    if criteria.MaxLength > 0 && length > criteria.MaxLength {
-        result.Passed = false
-        result.Reason = fmt.Sprintf("output too long: %d > %d", length, criteria.MaxLength)
-        return result, nil
-    }
-    result.Details["length"] = 1.0
-
-    // 2. 关键词检查
-    for _, kw := range criteria.Keywords {
-        if !strings.Contains(strings.ToLower(output), strings.ToLower(kw)) {
-            result.Passed = false
-            result.Reason = fmt.Sprintf("missing keyword: %s", kw)
-            return result, nil
-        }
-    }
-    result.Details["keywords"] = 1.0
-
-    // 3. 排除词检查
-    for _, ex := range criteria.Exclude {
-        if strings.Contains(strings.ToLower(output), strings.ToLower(ex)) {
-            result.Passed = false
-            result.Reason = fmt.Sprintf("contains excluded word: %s", ex)
-            return result, nil
-        }
-    }
-    result.Details["exclude"] = 1.0
-
-    // 4. 相似度检查
-    if criteria.Reference != "" {
-        similarity := e.EvaluateSimilarity(output, criteria.Reference)
-        result.Details["similarity"] = similarity
-
-        if similarity < criteria.Similarity {
-            result.Passed = false
-            result.Reason = fmt.Sprintf("similarity too low: %.2f < %.2f", similarity, criteria.Similarity)
-            return result, nil
-        }
-    }
-
-    // 计算综合得分
-    var total float64
-    for _, score := range result.Details {
-        total += score
-    }
-    if len(result.Details) > 0 {
-        result.Score = total / float64(len(result.Details))
-    }
-    result.Passed = true
-
-    return result, nil
-}
-
-// 辅助函数
-func tokenize(s string) map[string]bool {
-    words := strings.Fields(strings.ToLower(s))
-    set := make(map[string]bool)
-    for _, w := range words {
-        set[w] = true
-    }
-    return set
-}
-
-func intersect(a, b map[string]bool) map[string]bool {
-    result := make(map[string]bool)
-    for k := range a {
-        if b[k] {
-            result[k] = true
-        }
-    }
-    return result
-}
-
-func union(a, b map[string]bool) map[string]bool {
-    result := make(map[string]bool)
-    for k := range a {
-        result[k] = true
-    }
-    for k := range b {
-        result[k] = true
-    }
-    return result
-}
-```
-
-**使用示例**:
-
-```go
-evaluator := evals.NewLocalEvaluator()
-
-criteria := &evals.EvalCriteria{
-    Keywords:   []string{"function", "refactor"},
-    Exclude:    []string{"error", "failed"},
-    MinLength:  100,
-    Reference:  "重构了 handleRequest 函数，提升了性能",
-    Similarity: 0.5,
-}
-
-result, err := evaluator.Evaluate(agentOutput, criteria)
-if err != nil {
-    log.Fatal(err)
-}
-
-if result.Passed {
-    fmt.Printf("评估通过，得分: %.2f\n", result.Score)
-} else {
-    fmt.Printf("评估失败: %s\n", result.Reason)
-}
-```
-
-**优势**:
-- ✅ 无需 LLM，本地运行
-- ✅ 快速反馈，毫秒级
-- ✅ 确定性结果，可重现
-- ✅ 适合 CI/CD 自动化测试
+**Runtime 初始化流程**:
+1. 解析配置 (settings.json + settings.local.json + CLAUDE.md)
+2. 解析模型 (Model / ModelFactory / ModelPool)
+3. 构建沙箱 (文件系统 + 网络策略)
+4. 注册工具 (内置 + 自定义 + MCP)
+5. 初始化 Hooks 执行器
+6. 初始化 Skills / Commands / Subagents
+7. 构建消息历史存储
 
 ---
 
@@ -1194,11 +796,11 @@ if result.Passed {
 
 ```go
 // go.mod
-module github.com/你的组织/agentsdk-go
+module github.com/cexll/agentsdk-go
 
 go 1.24
 
-// 核心包完全零外部依赖
+// 核心包尽量减少外部依赖
 // 全部使用 Go 标准库:
 // - context
 // - encoding/json
@@ -1248,53 +850,44 @@ import (
     "context"
     "fmt"
     "log"
+    "os"
 
-    "github.com/你的组织/agentsdk-go/pkg/agent"
-    "github.com/你的组织/agentsdk-go/pkg/model/anthropic"
-    "github.com/你的组织/agentsdk-go/pkg/tool/builtin"
+    "github.com/cexll/agentsdk-go/pkg/api"
+    "github.com/cexll/agentsdk-go/pkg/model"
 )
 
 func main() {
-    // 1. 创建模型
-    model := anthropic.NewModel(
-        "claude-sonnet-4.5",
-        anthropic.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY")),
-    )
-
-    // 2. 创建 Agent
-    ag := agent.New(
-        agent.WithModel(model),
-        agent.WithWorkDir("/path/to/project"),
-        agent.WithMaxIterations(20),
-        agent.WithApproval(agent.ApprovalRequired),
-    )
-
-    // 3. 添加工具
-    if err := ag.AddTool(builtin.NewBashTool()); err != nil {
-        log.Fatal(err)
-    }
-    if err := ag.AddTool(builtin.NewReadTool()); err != nil {
-        log.Fatal(err)
-    }
-    if err := ag.AddTool(builtin.NewWriteTool()); err != nil {
-        log.Fatal(err)
-    }
-    if err := ag.AddTool(builtin.NewGrepTool()); err != nil {
-        log.Fatal(err)
+    // 1. 创建模型 Provider
+    provider := &model.AnthropicProvider{
+        APIKey:    os.Getenv("ANTHROPIC_API_KEY"),
+        ModelName: "claude-sonnet-4-5",
     }
 
-    // 4. 运行
-    result, err := ag.Run(context.Background(), "帮我重构 main.go 的 handleRequest 函数")
+    // 2. 创建 Runtime
+    runtime, err := api.New(context.Background(), api.Options{
+        ProjectRoot:   ".",
+        ModelFactory:  provider,
+        MaxIterations: 20,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer runtime.Close()
+
+    // 3. 运行
+    result, err := runtime.Run(context.Background(), api.Request{
+        Prompt:    "帮我重构 main.go 的 handleRequest 函数",
+        SessionID: "session-123",
+    })
     if err != nil {
         log.Fatal(err)
     }
 
-    fmt.Println("Output:", result.Output)
-    fmt.Printf("Token Usage: %+v\n", result.Usage)
+    fmt.Println("Output:", result.Result.Output)
 }
 ```
 
-### 5.2 流式输出 + 事件监听
+### 5.2 流式输出
 
 ```go
 package main
@@ -1304,108 +897,83 @@ import (
     "fmt"
     "log"
 
-    "github.com/你的组织/agentsdk-go/pkg/agent"
-    "github.com/你的组织/agentsdk-go/pkg/event"
+    "github.com/cexll/agentsdk-go/pkg/api"
 )
 
 func main() {
-    ag := createAgent() // ... 同上
+    runtime := createRuntime() // ... 同上
+    defer runtime.Close()
 
     // 流式执行
-    events, err := ag.RunStream(context.Background(), "实现用户登录功能")
+    events, err := runtime.RunStream(context.Background(), api.Request{
+        Prompt:    "实现用户登录功能",
+        SessionID: "stream-demo",
+    })
     if err != nil {
         log.Fatal(err)
     }
 
-    // 监听事件
+    // 监听 SSE 事件 (Anthropic 兼容格式)
     for evt := range events {
         switch evt.Type {
-        case event.EventProgress:
-            fmt.Println("[进度]", evt.Data)
-
-        case event.EventThinking:
-            fmt.Println("[思考]", evt.Data)
-
-        case event.EventToolCall:
-            toolCall := evt.Data.(event.ToolCallData)
-            fmt.Printf("[工具] %s(%+v)\n", toolCall.Name, toolCall.Params)
-
-        case event.EventToolResult:
-            result := evt.Data.(event.ToolResultData)
-            fmt.Printf("[结果] %s\n", result.Output)
-
-        case event.EventApprovalReq:
-            // 处理审批请求
-            approval := evt.Data.(event.ApprovalRequest)
-            fmt.Printf("[审批] 工具: %s, 参数: %+v\n", approval.ToolName, approval.Params)
-
-            // 用户确认
-            approved := askUser(approval)
-            ag.Approve(evt.ID, approved)
-
-        case event.EventError:
-            fmt.Println("[错误]", evt.Data)
+        case api.EventContentBlockDelta:
+            if evt.Delta != nil {
+                fmt.Print(evt.Delta.Text)
+            }
+        case api.EventToolExecutionStart:
+            fmt.Printf("\n[工具] %s\n", evt.Name)
+        case api.EventToolExecutionResult:
+            fmt.Printf("[结果] %v\n", evt.Output)
+        case api.EventError:
+            fmt.Printf("[错误] %v\n", evt.Output)
+        case api.EventMessageStop:
+            fmt.Println("\n[完成]")
         }
     }
 }
-
-func askUser(req event.ApprovalRequest) bool {
-    fmt.Printf("是否允许执行 %s? (y/n): ", req.ToolName)
-    var answer string
-    fmt.Scanln(&answer)
-    return answer == "y" || answer == "Y"
-}
 ```
 
-### 5.3 会话恢复 (Checkpoint/Resume)
+### 5.3 多模型分层
 
 ```go
 package main
 
 import (
     "context"
-    "fmt"
-    "log"
+    "os"
 
-    "github.com/你的组织/agentsdk-go/pkg/agent"
-    "github.com/你的组织/agentsdk-go/pkg/session"
+    "github.com/cexll/agentsdk-go/pkg/api"
+    "github.com/cexll/agentsdk-go/pkg/model"
 )
 
 func main() {
-    ag := createAgent()
+    apiKey := os.Getenv("ANTHROPIC_API_KEY")
 
-    // 获取会话
-    sess, err := ag.GetSession()
-    if err != nil {
-        log.Fatal(err)
-    }
+    runtime, _ := api.New(context.Background(), api.Options{
+        ProjectRoot: ".",
+        ModelFactory: &model.AnthropicProvider{
+            APIKey:    apiKey,
+            ModelName: "claude-sonnet-4-5",
+        },
+        // 分层模型池：不同任务使用不同成本的模型
+        ModelPool: map[api.ModelTier]model.Model{
+            api.ModelTierLow:  model.MustProvider(&model.AnthropicProvider{APIKey: apiKey, ModelName: "claude-3-5-haiku-20241022"}),
+            api.ModelTierMid:  model.MustProvider(&model.AnthropicProvider{APIKey: apiKey, ModelName: "claude-sonnet-4-5"}),
+            api.ModelTierHigh: model.MustProvider(&model.AnthropicProvider{APIKey: apiKey, ModelName: "claude-opus-4"}),
+        },
+        // Subagent 类型到模型层级的映射
+        SubagentModelMapping: map[string]api.ModelTier{
+            "explore": api.ModelTierLow,
+            "plan":    api.ModelTierHigh,
+        },
+    })
+    defer runtime.Close()
 
-    // 保存 checkpoint
-    if err := sess.Checkpoint("before-refactor"); err != nil {
-        log.Fatal(err)
-    }
-
-    // 执行操作
-    result, err := ag.Run(context.Background(), "重构整个项目")
-    if err != nil {
-        // 出错了，恢复到 checkpoint
-        fmt.Println("发生错误，恢复到之前状态...")
-        if err := sess.Resume("before-refactor"); err != nil {
-            log.Fatal(err)
-        }
-        return
-    }
-
-    fmt.Println("重构完成:", result.Output)
-
-    // 也可以 Fork 创建分支探索
-    forkSess, err := sess.Fork("experiment-branch")
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    // 在分支中尝试不同方案
-    // ...
+    // 请求时可覆盖模型层级
+    runtime.Run(context.Background(), api.Request{
+        Prompt: "分析代码质量",
+        Model:  api.ModelTierHigh, // 使用 Opus
+    })
 }
 ```
 
@@ -1416,10 +984,10 @@ package main
 
 import (
     "context"
-    "encoding/json"
     "fmt"
 
-    "github.com/你的组织/agentsdk-go/pkg/tool"
+    "github.com/cexll/agentsdk-go/pkg/api"
+    "github.com/cexll/agentsdk-go/pkg/tool"
 )
 
 // DatabaseTool 自定义数据库工具
@@ -1427,18 +995,8 @@ type DatabaseTool struct {
     db *sql.DB
 }
 
-func NewDatabaseTool(db *sql.DB) *DatabaseTool {
-    return &DatabaseTool{db: db}
-}
-
-func (t *DatabaseTool) Name() string {
-    return "database_query"
-}
-
-func (t *DatabaseTool) Description() string {
-    return "执行 SQL 查询并返回结果"
-}
-
+func (t *DatabaseTool) Name() string        { return "database_query" }
+func (t *DatabaseTool) Description() string { return "执行 SQL 查询并返回结果" }
 func (t *DatabaseTool) Schema() *tool.JSONSchema {
     return &tool.JSONSchema{
         Type: "object",
@@ -1453,89 +1011,73 @@ func (t *DatabaseTool) Schema() *tool.JSONSchema {
 }
 
 func (t *DatabaseTool) Execute(ctx context.Context, params map[string]interface{}) (*tool.ToolResult, error) {
-    query, ok := params["query"].(string)
-    if !ok {
-        return nil, fmt.Errorf("invalid query parameter")
-    }
-
-    // 执行查询
+    query := params["query"].(string)
     rows, err := t.db.QueryContext(ctx, query)
     if err != nil {
-        return &tool.ToolResult{
-            Success: false,
-            Error:   err,
-        }, nil
+        return &tool.ToolResult{Success: false, Error: err}, nil
     }
     defer rows.Close()
-
-    // 构造结果
-    var results []map[string]interface{}
     // ... 解析 rows
-
-    return &tool.ToolResult{
-        Success: true,
-        Output:  fmt.Sprintf("查询返回 %d 行", len(results)),
-        Data:    results,
-    }, nil
+    return &tool.ToolResult{Success: true, Output: "查询完成"}, nil
 }
 
 func main() {
     db, _ := sql.Open("postgres", "...")
 
-    ag := createAgent()
-    ag.AddTool(NewDatabaseTool(db))
+    runtime, _ := api.New(context.Background(), api.Options{
+        ProjectRoot: ".",
+        ModelFactory: provider,
+        CustomTools: []tool.Tool{&DatabaseTool{db: db}},
+    })
+    defer runtime.Close()
 
-    ag.Run(context.Background(), "查询最近 24 小时的订单数据")
+    runtime.Run(context.Background(), api.Request{
+        Prompt: "查询最近 24 小时的订单数据",
+    })
 }
 ```
 
-### 5.5 Hook 扩展
+### 5.5 Hooks 与 Middleware 扩展
+
+**Shell Hooks** (通过配置或 `api.Options.TypedHooks`):
 
 ```go
-package main
+runtime, _ := api.New(ctx, api.Options{
+    // Shell Hooks: 外部进程拦截
+    TypedHooks: []corehooks.ShellHook{
+        {
+            Matcher: corehooks.HookMatcher{EventName: "PreToolUse", ToolName: "Bash"},
+            Command: "python3 validate_bash.py",
+            Timeout: 10 * time.Second,
+        },
+    },
+    // ...
+})
+```
 
-import (
-    "context"
-    "fmt"
-    "time"
+**In-process Middleware** (通过 `api.Options.Middleware`):
 
-    "github.com/你的组织/agentsdk-go/pkg/agent"
-)
-
-// LoggingHook 日志钩子
-type LoggingHook struct{}
-
-func (h *LoggingHook) PreRun(ctx context.Context, input string) error {
-    fmt.Printf("[%s] 开始执行: %s\n", time.Now().Format("15:04:05"), input)
-    return nil
-}
-
-func (h *LoggingHook) PostRun(ctx context.Context, result *agent.RunResult) error {
-    fmt.Printf("[%s] 执行完成，Token: %d\n",
-        time.Now().Format("15:04:05"),
-        result.Usage.TotalTokens,
-    )
-    return nil
-}
-
-func (h *LoggingHook) PreToolCall(ctx context.Context, toolName string, params map[string]interface{}) error {
-    fmt.Printf("[%s] 调用工具: %s\n", time.Now().Format("15:04:05"), toolName)
-    return nil
-}
-
-func (h *LoggingHook) PostToolCall(ctx context.Context, toolName string, result *tool.ToolResult) error {
-    fmt.Printf("[%s] 工具返回: %s\n", time.Now().Format("15:04:05"), result.Output)
-    return nil
-}
-
-func main() {
-    ag := createAgent()
-
-    // 添加 Hook
-    ag = ag.WithHook(&LoggingHook{})
-
-    ag.Run(context.Background(), "分析代码质量")
-}
+```go
+runtime, _ := api.New(ctx, api.Options{
+    Middleware: []middleware.Middleware{
+        middleware.Funcs{
+            Identifier: "audit-logger",
+            OnBeforeAgent: func(ctx context.Context, st *middleware.State) error {
+                log.Printf("[审计] 会话开始")
+                return nil
+            },
+            OnBeforeTool: func(ctx context.Context, st *middleware.State) error {
+                log.Printf("[审计] 工具调用: %v", st.ToolCall)
+                return nil
+            },
+            OnAfterAgent: func(ctx context.Context, st *middleware.State) error {
+                log.Printf("[审计] 会话结束")
+                return nil
+            },
+        },
+    },
+    // ...
+})
 ```
 
 ---
@@ -1870,6 +1412,7 @@ refactor: 重构
 
 ### C. 版本历史
 
+- 2026-02-11: 与代码同步更新，修正接口签名、目录结构、API 示例
 - 2025-01-15: v1.0 初版发布
 - 2025-01-15: 完成 16 个项目横向对比
 - 2025-01-15: 确定核心架构设计
@@ -1877,5 +1420,5 @@ refactor: 重构
 ---
 
 **文档维护者**: 架构组
-**最后更新**: 2025-01-15
-**状态**: ✅ 已定稿
+**最后更新**: 2026-02-11
+**状态**: ✅ 已更新（与代码同步）

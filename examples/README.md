@@ -2,7 +2,7 @@
 
 # agentsdk-go Examples
 
-Eight examples. Run everything from the repo root.
+Twelve examples. Run everything from the repo root.
 
 **Environment Setup**
 
@@ -23,14 +23,18 @@ export ANTHROPIC_API_KEY=sk-ant-your-key-here
 ```
 
 **Learning path**
-- `01-basic` (32 lines): single API call, minimal surface, prints one response.
-- `02-cli` (73 lines): CLI REPL with session history and optional config loading.
+- `01-basic` (~36 lines): single API call, minimal surface, prints one response.
+- `02-cli` (~93 lines): CLI REPL with session history and optional config loading.
 - `03-http` (~300 lines): REST + SSE server on `:8080`, production-ready wiring.
 - `04-advanced` (~1400 lines): full stack with middleware, hooks, MCP, sandbox, skills, subagents.
-- `05-custom-tools` (~150 lines): selective built-in tools and custom tool registration.
-- `05-multimodel` (~120 lines): multi-model support with model pool and tier-based routing.
-- `06-v0.4.0-features` (~280 lines): v0.4.0 feature tour (offline-safe).
-- `08-askuserquestion` (~150 lines): AskUserQuestion tool integration with build-tag demos.
+- `05-custom-tools` (~58 lines): selective built-in tools and custom tool registration.
+- `06-embed` (~181 lines): embedded filesystem for `.claude` directory via `go:embed`.
+- `07-multimodel` (~130 lines): multi-model pool with tier-based routing and cost optimization.
+- `08-askuserquestion` (~474 lines): AskUserQuestion tool integration with build-tag demos.
+- `09-task-system` (~56 lines): task tracking with dependencies.
+- `10-hooks` (~85 lines): hooks system with PreToolUse/PostToolUse shell hooks.
+- `11-reasoning` (~186 lines): reasoning model support (DeepSeek-R1 reasoning_content passthrough).
+- `12-multimodal` (~135 lines): multimodal content blocks (text + images).
 
 ## 01-basic — minimal entry
 - Purpose: fastest way to see the SDK loop in action with one request/response.
@@ -73,22 +77,22 @@ go run ./examples/05-custom-tools
 ```
 - See [05-custom-tools/README.md](05-custom-tools/README.md) for detailed usage and custom tool implementation guide.
 
-## 05-multimodel — multi-model support
+## 06-embed — embedded filesystem
+- Key features: `EmbedFS` for embedding `.claude` directory into the binary, priority resolution between embedded and on-disk configs.
+- Run:
+```bash
+source .env
+go run ./examples/06-embed
+```
+
+## 07-multimodel — multi-model support
 - Key features: model pool configuration, tier-based model routing (low/mid/high), subagent-model mapping, cost optimization.
 - Run:
 ```bash
 source .env
-go run ./examples/05-multimodel
+go run ./examples/07-multimodel
 ```
-- See [05-multimodel/README.md](05-multimodel/README.md) for configuration examples and best practices.
-
-## 06-v0.4.0-features — v0.4.0 feature tour (offline-safe)
-- Key features: rules loader, token tracking, auto-compact, async bash, disallowed tools, OTEL (via build tag).
-- Run:
-```bash
-go run ./examples/06-v0.4.0-features
-```
-- See [06-v0.4.0-features/README.md](06-v0.4.0-features/README.md) for details and online mode notes.
+- See [07-multimodel/README.md](07-multimodel/README.md) for configuration examples and best practices.
 
 ## 08-askuserquestion — AskUserQuestion tool
 - Key features: three demo modes selected by build tags.
@@ -100,3 +104,36 @@ source .env
 (cd examples/08-askuserquestion && go run -tags demo_simple .) # tool-only test (no API key needed)
 ```
 - See [08-askuserquestion/README.md](08-askuserquestion/README.md) for detailed usage and implementation patterns.
+
+## 09-task-system — task tracking
+- Key features: task creation, dependency management, status tracking via built-in task tools.
+- Run:
+```bash
+source .env
+go run ./examples/09-task-system
+```
+
+## 10-hooks — hooks system
+- Key features: `PreToolUse`/`PostToolUse` shell hooks, async execution, once-per-session dedup.
+- Run:
+```bash
+source .env
+go run ./examples/10-hooks
+```
+
+## 11-reasoning — reasoning models
+- Key features: `reasoning_content` passthrough for thinking models (DeepSeek-R1), streaming support, multi-turn conversations.
+- Run:
+```bash
+export OPENAI_API_KEY=your-key
+export OPENAI_BASE_URL=https://api.deepseek.com/v1
+go run ./examples/11-reasoning
+```
+
+## 12-multimodal — multimodal content
+- Key features: text + image content blocks (base64 and URL), `ContentBlocks` in `api.Request`.
+- Run:
+```bash
+source .env
+go run ./examples/12-multimodal
+```

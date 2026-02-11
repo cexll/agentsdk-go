@@ -167,6 +167,12 @@ Currently supports:
 
 Adapters convert between SDK's generic message format and provider-specific APIs.
 
+**Dual Model Interface**: The SDK has two distinct Model interfaces:
+- `agent.Model` (`pkg/agent/agent.go`) — defines `Generate(ctx, *Context) (*ModelOutput, error)`. This is the agent-loop-facing interface that the core loop calls each iteration.
+- `model.Model` (`pkg/model/interface.go`) — defines `Complete(ctx, Request) (*Response, error)` and `CompleteStream(ctx, Request, StreamHandler) error`. This is the provider-facing interface that adapters implement.
+
+The `pkg/api` layer bridges these two interfaces: it wraps a `model.Model` into an `agent.Model` adapter so the agent loop can call `Generate` while the underlying provider uses `Complete`/`CompleteStream`.
+
 ### Tool System
 
 **Location**: `pkg/tool/`
@@ -218,7 +224,9 @@ Hooks run as shell commands via `ShellHook` and receive a flat JSON payload on s
 - `{"hookSpecificOutput":{"updatedInput":{...}}}` — modify tool params
 - `{"continue":false,"stopReason":"..."}` — stop execution
 
-**Supported Events**: PreToolUse, PostToolUse, PostToolUseFailure, PermissionRequest, SessionStart, SessionEnd, SubagentStart, SubagentStop, Stop, Notification, UserPromptSubmit, PreCompact. Each event has event-specific matcher targets (e.g., tool name for tool events, source for SessionStart, reason for SessionEnd).
+**Supported Events**: PreToolUse, PostToolUse, UserPromptSubmit, Stop, PermissionRequest, SessionStart, SessionEnd, SubagentStart, SubagentStop, ModelSelected. Each event has event-specific matcher targets (e.g., tool name for tool events, source for SessionStart, reason for SessionEnd).
+
+**Defined but not wired in runtimeHookAdapter**: PostToolUseFailure, Notification, PreCompact are defined as event types in `pkg/core/events/types.go` but do not have corresponding methods in the runtime hook adapter (`pkg/api/options.go`). They can be used with custom hook middleware but are not dispatched by the default runtime.
 
 **ShellHook Options**: `Async` (fire-and-forget), `Once` (per-session dedup), `Timeout` (default 600s for commands), `StatusMessage`.
 
@@ -284,10 +292,10 @@ Three-layer defense:
 3. **Command validation** - Blocks dangerous commands (rm -rf, etc.)
 
 **Command Validator** (`pkg/security/validator.go`):
-- Blocks destructive commands: `dd`, `mkfs`, `fdisk`, `shutdown`, `reboot`
+- Blocks destructive commands: `dd`, `mkfs`, `fdisk`, `shutdown`, `reboot`, `sudo`
 - Pattern-based detection for dangerous rm/rmdir operations
-- Configurable for CLI scenarios (can allow shell metacharacters)
-- Default: blocks shell metacharacters `|;&><` and backticks in platform mode
+- `AllowShellMetachars` toggle: CLI mode auto-enables; CI/Platform keep blocked
+- Default: blocks shell metacharacters `|;&><`$` unless `AllowShellMetachars(true)` is called
 
 Network isolation via allow-list for outbound connections.
 

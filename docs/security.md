@@ -83,11 +83,32 @@ if err := sandbox.ValidateCommand(command); err != nil {
 
 Checks before execution:
 
-- Dangerous commands (`dd`, `mkfs`, `fdisk`, `shutdown`, …)  
-- Dangerous arguments (e.g., `--no-preserve-root`)  
-- Dangerous patterns (`rm -rf`, `rm -r`)  
-- Shell metacharacters (in Platform mode)  
-- Command length limits
+- Dangerous commands (`dd`, `mkfs`, `fdisk`, `shutdown`, `sudo`, …)
+- Dangerous arguments (e.g., `--no-preserve-root`, `/dev/`, `../`)
+- Dangerous patterns (`rm -rf`, `rm -r`, `rm *`, `rm /`)
+- Shell metacharacters (`|;&><`$`) — blocked by default, configurable via `AllowShellMetachars`
+- Control characters (except tab/newline/carriage return)
+- Command length limits (default 4096 bytes)
+- Argument count limits (default 64)
+
+### AllowShellMetachars Toggle
+
+The `AllowShellMetachars` method on `Validator` controls whether shell metacharacters (`|`, `;`, `&`, `>`, `<`, `` ` ``, `$`) are permitted:
+
+- **Default (false)**: All shell metacharacters are blocked. This is the safe default for CI and Platform entry points.
+- **CLI mode**: The SDK automatically calls `AllowShellMetachars(true)` on the built-in bash tool's validator when `EntryPoint == EntryPointCLI` (see `pkg/api/agent.go`). This allows interactive users to use pipes, redirections, and other shell features.
+
+```go
+// Automatic behavior in api.New():
+// if entry == EntryPointCLI {
+//     bash.AllowShellMetachars(true)
+// }
+
+// Manual control:
+validator := security.NewValidator()
+validator.AllowShellMetachars(true)  // enable for CLI-like scenarios
+validator.AllowShellMetachars(false) // disable for strict environments
+```
 
 ### Implementation
 
@@ -110,11 +131,13 @@ Checks before execution:
 - `rm -r` / `rm --recursive` – recursive delete  
 - `rmdir -p` – recursive directory delete
 
-#### Shell Metacharacters (Platform)
+#### Shell Metacharacters (default: blocked)
 
-- `|`, `;`, `&` – command chaining  
-- `>`, `<` – redirection  
-- `` ` `` – command substitution
+- `|`, `;`, `&` – command chaining
+- `>`, `<` – redirection
+- `` ` ``, `$` – command substitution
+
+> Shell metacharacters are blocked by default for all entry points. In CLI mode, the SDK automatically enables them via `AllowShellMetachars(true)`. CI and Platform modes keep them blocked unless explicitly overridden.
 
 ### Code Example
 
@@ -130,8 +153,8 @@ if err := validator.Validate(command); err != nil {
     return err
 }
 
-// Allow shell metachars (CLI only)
-validator.AllowShellMeta(true)
+// Allow shell metachars (CLI scenarios)
+validator.AllowShellMetachars(true)
 ```
 
 ### Custom Rules
