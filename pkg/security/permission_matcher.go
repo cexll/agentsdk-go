@@ -132,8 +132,8 @@ func compilePermissionRule(rule string) (*permissionRule, error) {
 		return nil, errors.New("permission rule is empty")
 	}
 
-	// Path rule: bare glob/regex patterns containing "/" or "." match any tool target.
-	if !strings.ContainsRune(trimmed, '(') && (strings.Contains(trimmed, "/") || strings.Contains(trimmed, ".")) {
+	// Path rule: bare glob/regex patterns containing separators or "." match any tool target.
+	if !strings.ContainsRune(trimmed, '(') && (strings.Contains(trimmed, "/") || strings.Contains(trimmed, "\\") || strings.Contains(trimmed, ".")) {
 		matcher, err := compilePattern(trimmed)
 		if err != nil {
 			return nil, fmt.Errorf("compile path rule %q: %w", rule, err)
@@ -215,12 +215,15 @@ func compilePattern(pattern string) (func(string) bool, error) {
 		return re.MatchString, nil
 	}
 
-	regex := globToRegex(trimmed)
+	normalizedPattern := normalizeGlobSlashes(trimmed)
+	regex := globToRegex(normalizedPattern)
 	re, err := regexp.Compile("^" + regex + "$")
 	if err != nil {
 		return nil, err
 	}
-	return re.MatchString, nil
+	return func(target string) bool {
+		return re.MatchString(normalizeGlobSlashes(target))
+	}, nil
 }
 
 func globToRegex(glob string) string {
@@ -244,6 +247,10 @@ func globToRegex(glob string) string {
 		}
 	}
 	return b.String()
+}
+
+func normalizeGlobSlashes(input string) string {
+	return strings.ReplaceAll(input, "\\", "/")
 }
 
 func deriveTarget(tool string, params map[string]any) string {

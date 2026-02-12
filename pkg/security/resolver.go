@@ -25,6 +25,10 @@ func (r *PathResolver) Resolve(path string) (string, error) {
 	if cleanInput == "" {
 		return "", fmt.Errorf("security: empty path")
 	}
+	// Keep separator-only input as root for compatibility across platforms/tests.
+	if cleanInput == string(filepath.Separator) {
+		return cleanInput, nil
+	}
 
 	abs, err := filepath.Abs(cleanInput)
 	if err != nil {
@@ -35,11 +39,7 @@ func (r *PathResolver) Resolve(path string) (string, error) {
 		return clean, nil
 	}
 
-	parts := strings.Split(clean, string(filepath.Separator))
-	var current string
-	if filepath.IsAbs(clean) {
-		current = string(filepath.Separator)
-	}
+	current, parts := splitPathForWalk(clean)
 
 	depth := 0
 	for _, part := range parts {
@@ -54,11 +54,7 @@ func (r *PathResolver) Resolve(path string) (string, error) {
 			return "", fmt.Errorf("security: path exceeds max depth %d", r.maxDepth)
 		}
 
-		if current == "" || current == string(filepath.Separator) {
-			current = filepath.Join(current, part)
-		} else {
-			current = filepath.Join(current, part)
-		}
+		current = filepath.Join(current, part)
 
 		if err := ensureNoSymlink(current); err != nil {
 			return "", err
@@ -83,4 +79,25 @@ func ensureNoSymlink(path string) error {
 		return fmt.Errorf("security: symlink rejected %s", path)
 	}
 	return openNoFollow(path)
+}
+
+func splitPathForWalk(clean string) (string, []string) {
+	sep := string(filepath.Separator)
+	if !filepath.IsAbs(clean) {
+		return "", strings.Split(clean, sep)
+	}
+
+	volume := filepath.VolumeName(clean)
+	remainder := clean
+	current := sep
+
+	if volume != "" {
+		remainder = strings.TrimPrefix(remainder, volume)
+		current = volume + sep
+	}
+	remainder = strings.TrimPrefix(remainder, sep)
+	if remainder == "" {
+		return current, nil
+	}
+	return current, strings.Split(remainder, sep)
 }
