@@ -18,6 +18,20 @@ var (
 	ErrTaskBlocked       = errors.New("tasks: task is blocked by incomplete dependencies")
 )
 
+// Store defines the task storage contract used by builtin task tools.
+type Store interface {
+	Create(subject, description, activeForm string) (*Task, error)
+	Get(id string) (*Task, error)
+	Update(id string, updates TaskUpdate) (*Task, error)
+	List() []*Task
+	Delete(id string) error
+	AddDependency(taskID, blockedByID string) error
+	RemoveDependency(taskID, blockedByID string) error
+	GetBlockedTasks(taskID string) []*Task
+	GetBlockingTasks(taskID string) []*Task
+	Close() error
+}
+
 type TaskUpdate struct {
 	Subject     *string
 	Description *string
@@ -36,6 +50,42 @@ func NewTaskStore() *TaskStore {
 	return &TaskStore{
 		tasks: map[string]*Task{},
 	}
+}
+
+// NewTaskStoreFromSnapshot creates a store from an external snapshot.
+// Invalid entries (empty IDs) are skipped.
+func NewTaskStoreFromSnapshot(snapshot []*Task) *TaskStore {
+	store := NewTaskStore()
+	if len(snapshot) == 0 {
+		return store
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.initLocked()
+
+	for _, task := range snapshot {
+		if task == nil {
+			continue
+		}
+		id := strings.TrimSpace(task.ID)
+		if id == "" {
+			continue
+		}
+		if _, exists := store.tasks[id]; exists {
+			continue
+		}
+		dup := cloneTask(task)
+		dup.ID = id
+		store.tasks[id] = dup
+		store.order = append(store.order, id)
+	}
+	return store
+}
+
+// Close releases persistence resources.
+func (s *TaskStore) Close() error {
+	return nil
 }
 
 func (s *TaskStore) Create(subject, description, activeForm string) (*Task, error) {
@@ -288,4 +338,9 @@ func removeString(list []string, target string) []string {
 		}
 	}
 	return list
+}
+
+// Snapshot returns a deep copy of all tasks preserving insertion order.
+func (s *TaskStore) Snapshot() []*Task {
+	return s.List()
 }

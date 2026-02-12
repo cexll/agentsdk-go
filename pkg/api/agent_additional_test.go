@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/cexll/agentsdk-go/pkg/runtime/commands"
 	"github.com/cexll/agentsdk-go/pkg/runtime/skills"
 	"github.com/cexll/agentsdk-go/pkg/runtime/subagents"
+	"github.com/cexll/agentsdk-go/pkg/runtime/tasks"
 	"github.com/cexll/agentsdk-go/pkg/sandbox"
 	"github.com/cexll/agentsdk-go/pkg/tool"
 	toolbuiltin "github.com/cexll/agentsdk-go/pkg/tool/builtin"
@@ -860,4 +862,75 @@ func TestWithStreamEmitGuardsNilInputs(t *testing.T) {
 	if streamEmitFromContext(context.Background()) != nil {
 		t.Fatal("expected nil emit when not set")
 	}
+}
+
+func TestNewRuntimeTaskStoreOwnership(t *testing.T) {
+	root := newClaudeProject(t)
+	mdl := &stubModel{responses: []*model.Response{{Message: model.Message{Role: "assistant", Content: "ok"}}}}
+
+	rtDefault, err := New(context.Background(), Options{ProjectRoot: root, Model: mdl})
+	if err != nil {
+		t.Fatalf("runtime default task store: %v", err)
+	}
+	if rtDefault.taskStore == nil {
+		t.Fatal("expected runtime to create default task store")
+	}
+	if !rtDefault.ownsTaskStore {
+		t.Fatal("expected runtime to own default task store")
+	}
+	if err := rtDefault.Close(); err != nil {
+		t.Fatalf("close runtime with default task store: %v", err)
+	}
+
+	spy := &taskStoreCloseSpy{Store: tasks.NewTaskStore()}
+	rtProvided, err := New(context.Background(), Options{
+		ProjectRoot: root,
+		Model:       mdl,
+		TaskStore:   spy,
+	})
+	if err != nil {
+		t.Fatalf("runtime provided task store: %v", err)
+	}
+	if rtProvided.ownsTaskStore {
+		t.Fatal("expected runtime not to own caller-provided task store")
+	}
+	if err := rtProvided.Close(); err != nil {
+		t.Fatalf("close runtime with provided task store: %v", err)
+	}
+	if calls := atomic.LoadInt32(&spy.closeCalls); calls != 0 {
+		t.Fatalf("expected provided task store Close not called, got %d", calls)
+	}
+}
+
+func TestRuntimeCloseClosesOwnedTaskStore(t *testing.T) {
+	spy := &taskStoreCloseSpy{Store: tasks.NewTaskStore()}
+	rt := &Runtime{
+		taskStore:     spy,
+		ownsTaskStore: true,
+	}
+
+	if err := rt.Close(); err != nil {
+		t.Fatalf("runtime close: %v", err)
+	}
+	if calls := atomic.LoadInt32(&spy.closeCalls); calls != 1 {
+		t.Fatalf("expected owned task store Close called once, got %d", calls)
+	}
+	// closeOnce should keep TaskStore.Close idempotent.
+	if err := rt.Close(); err != nil {
+		t.Fatalf("runtime close second call: %v", err)
+	}
+	if calls := atomic.LoadInt32(&spy.closeCalls); calls != 1 {
+		t.Fatalf("expected close count to remain 1, got %d", calls)
+	}
+}
+
+type taskStoreCloseSpy struct {
+	tasks.Store
+	closeCalls int32
+	closeErr   error
+}
+
+func (s *taskStoreCloseSpy) Close() error {
+	atomic.AddInt32(&s.closeCalls, 1)
+	return s.closeErr
 }

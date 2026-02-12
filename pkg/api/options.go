@@ -21,6 +21,7 @@ import (
 	"github.com/cexll/agentsdk-go/pkg/runtime/commands"
 	"github.com/cexll/agentsdk-go/pkg/runtime/skills"
 	"github.com/cexll/agentsdk-go/pkg/runtime/subagents"
+	"github.com/cexll/agentsdk-go/pkg/runtime/tasks"
 	"github.com/cexll/agentsdk-go/pkg/sandbox"
 	"github.com/cexll/agentsdk-go/pkg/security"
 	"github.com/cexll/agentsdk-go/pkg/tool"
@@ -186,6 +187,11 @@ type Options struct {
 	MaxSessions       int
 
 	Tools []tool.Tool
+
+	// TaskStore overrides the default in-memory task store used by task_* built-ins.
+	// When nil, runtime creates and owns a fresh in-memory store.
+	// When provided, ownership remains with the caller.
+	TaskStore tasks.Store
 
 	// EnabledBuiltinTools controls which built-in tools are registered when Options.Tools is empty.
 	// - nil (default): register all built-ins to preserve current behaviour

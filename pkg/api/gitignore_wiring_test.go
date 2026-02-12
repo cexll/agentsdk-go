@@ -52,7 +52,7 @@ func TestBuiltinToolsRespectGitignoreSetting(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			respect := tc.respectGitignore
 			settings := &config.Settings{RespectGitignore: &respect}
-			factories := builtinToolFactories(root, false, EntryPointCLI, settings, nil, nil)
+			factories := builtinToolFactories(root, false, EntryPointCLI, settings, nil, nil, nil)
 
 			globTool := factories["glob"]()
 			require.NotNil(t, globTool)

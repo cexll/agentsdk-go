@@ -24,10 +24,10 @@ var taskGetSchema = &tool.JSONSchema{
 }
 
 type TaskGetTool struct {
-	store *tasks.TaskStore
+	store tasks.Store
 }
 
-func NewTaskGetTool(store *tasks.TaskStore) *TaskGetTool {
+func NewTaskGetTool(store tasks.Store) *TaskGetTool {
 	return &TaskGetTool{store: store}
 }
 

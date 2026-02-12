@@ -90,6 +90,48 @@ func TestNewTaskStore(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestNewTaskStoreFromSnapshot(t *testing.T) {
+	now := time.Now()
+	snapshot := []*Task{
+		{
+			ID:          "task-1",
+			Subject:     "Task One",
+			Description: "desc-1",
+			ActiveForm:  "form-1",
+			Status:      TaskInProgress,
+			Owner:       "alice",
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		},
+		{
+			ID:          "task-2",
+			Subject:     "Task Two",
+			Description: "desc-2",
+			ActiveForm:  "form-2",
+			Status:      TaskPending,
+			BlockedBy:   []string{"task-1"},
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		},
+	}
+
+	store := NewTaskStoreFromSnapshot(snapshot)
+	require.NotNil(t, store)
+
+	list := store.Snapshot()
+	require.Len(t, list, 2)
+	require.Equal(t, "task-1", list[0].ID)
+	require.Equal(t, "task-2", list[1].ID)
+	require.Equal(t, TaskInProgress, list[0].Status)
+	require.Equal(t, "alice", list[0].Owner)
+	require.ElementsMatch(t, []string{"task-1"}, list[1].BlockedBy)
+
+	list[0].Subject = "mutated"
+	reloaded, err := store.Get("task-1")
+	require.NoError(t, err)
+	require.Equal(t, "Task One", reloaded.Subject)
+}
+
 func TestTaskStoreValidationAndErrors(t *testing.T) {
 	var store TaskStore
 

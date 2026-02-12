@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cexll/agentsdk-go/pkg/runtime/subagents"
 	"github.com/cexll/agentsdk-go/pkg/tool"
 )
 
@@ -90,12 +89,7 @@ var taskSchema = &tool.JSONSchema{
 		},
 		"subagent_type": map[string]interface{}{
 			"type":        "string",
-			"description": "The type of specialized agent to use for this task",
-			"enum": []string{
-				subagents.TypeGeneralPurpose,
-				subagents.TypeExplore,
-				subagents.TypePlan,
-			},
+			"description": "The type/name of specialized agent to use for this task (built-in or custom registered subagent).",
 		},
 		"model": map[string]interface{}{
 			"type":        "string",
@@ -125,20 +119,6 @@ var modelAliasMap = map[string]string{
 	taskModelOpus:   "claude-opus-4-20250514",
 	taskModelHaiku:  "claude-3-5-haiku-20241022",
 }
-
-var supportedTaskSubagents = []string{
-	subagents.TypeGeneralPurpose,
-	subagents.TypeExplore,
-	subagents.TypePlan,
-}
-
-var supportedTaskSubagentSet = func() map[string]struct{} {
-	set := make(map[string]struct{}, len(supportedTaskSubagents))
-	for _, name := range supportedTaskSubagents {
-		set[name] = struct{}{}
-	}
-	return set
-}()
 
 // TaskRunner executes a validated task invocation.
 type TaskRunner func(context.Context, TaskRequest) (*tool.ToolResult, error)
@@ -223,9 +203,6 @@ func parseTaskParams(params map[string]interface{}) (TaskRequest, error) {
 		return TaskRequest{}, err
 	}
 	subagentType = strings.ToLower(subagentType)
-	if _, ok := supportedTaskSubagentSet[subagentType]; !ok {
-		return TaskRequest{}, fmt.Errorf("unknown subagent_type %q", subagentType)
-	}
 
 	modelName, err := optionalModel(params)
 	if err != nil {

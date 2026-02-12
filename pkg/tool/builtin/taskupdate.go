@@ -59,11 +59,11 @@ var taskUpdateSchema = &tool.JSONSchema{
 
 type TaskUpdateTool struct {
 	mu       sync.Mutex
-	store    *tasks.TaskStore
+	store    tasks.Store
 	revision uint64
 }
 
-func NewTaskUpdateTool(store *tasks.TaskStore) *TaskUpdateTool {
+func NewTaskUpdateTool(store tasks.Store) *TaskUpdateTool {
 	return &TaskUpdateTool{store: store}
 }
 
@@ -334,7 +334,7 @@ func parseTaskIDList(value interface{}, field, selfID string) ([]string, error) 
 	return out, nil
 }
 
-func replaceBlockedBy(store *tasks.TaskStore, taskID string, existing, desired []string, affected map[string]struct{}) error {
+func replaceBlockedBy(store tasks.Store, taskID string, existing, desired []string, affected map[string]struct{}) error {
 	existingSet := make(map[string]struct{}, len(existing))
 	for _, id := range existing {
 		existingSet[id] = struct{}{}
@@ -369,7 +369,7 @@ func replaceBlockedBy(store *tasks.TaskStore, taskID string, existing, desired [
 	return nil
 }
 
-func replaceBlocks(store *tasks.TaskStore, blockerID string, existing, desired []string, affected map[string]struct{}) error {
+func replaceBlocks(store tasks.Store, blockerID string, existing, desired []string, affected map[string]struct{}) error {
 	existingSet := make(map[string]struct{}, len(existing))
 	for _, id := range existing {
 		existingSet[id] = struct{}{}

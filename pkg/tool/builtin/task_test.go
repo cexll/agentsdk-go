@@ -86,7 +86,6 @@ func TestTaskToolExecuteValidation(t *testing.T) {
 		{"long description", map[string]interface{}{"description": "one two three four five six", "prompt": "x", "subagent_type": "general-purpose"}},
 		{"empty prompt", map[string]interface{}{"description": "valid words here", "prompt": " ", "subagent_type": "general-purpose"}},
 		{"missing subagent", map[string]interface{}{"description": "valid words here", "prompt": "x"}},
-		{"unknown subagent", map[string]interface{}{"description": "valid words here", "prompt": "x", "subagent_type": "unknown"}},
 		{"invalid model", map[string]interface{}{"description": "valid words here", "prompt": "x", "subagent_type": "general-purpose", "model": "delta"}},
 		{"empty resume", map[string]interface{}{"description": "valid words here", "prompt": "x", "subagent_type": "general-purpose", "resume": " "}},
 	}
@@ -134,26 +133,13 @@ func TestTaskToolExecuteContextCanceled(t *testing.T) {
 	}
 }
 
-func TestTaskSchemaEnumerationsStayInSync(t *testing.T) {
+func TestTaskSchemaShape(t *testing.T) {
 	prop, ok := taskSchema.Properties["subagent_type"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("subagent_type property missing: %#v", taskSchema.Properties["subagent_type"])
 	}
-	rawEnum, ok := prop["enum"].([]string)
-	if !ok {
-		t.Fatalf("subagent_type enum missing: %#v", prop["enum"])
-	}
-	actual := append([]string(nil), rawEnum...)
-	sort.Strings(actual)
-	expected := append([]string(nil), supportedTaskSubagents...)
-	sort.Strings(expected)
-	if len(actual) != len(expected) {
-		t.Fatalf("unexpected enum length: got %v want %v", actual, expected)
-	}
-	for i := range actual {
-		if actual[i] != expected[i] {
-			t.Fatalf("enum mismatch at %d: got %s want %s", i, actual[i], expected[i])
-		}
+	if _, ok := prop["enum"]; ok {
+		t.Fatalf("subagent_type should not declare fixed enum: %#v", prop["enum"])
 	}
 
 	modelProp, ok := taskSchema.Properties["model"].(map[string]interface{})
@@ -214,6 +200,18 @@ func TestParseTaskParamsModelAliases(t *testing.T) {
 	}
 	if req.Model != "" || req.Resume != "" {
 		t.Fatalf("expected optional fields empty, got model=%q resume=%q", req.Model, req.Resume)
+	}
+
+	custom, err := parseTaskParams(map[string]interface{}{
+		"description":   "valid words here",
+		"prompt":        "Investigate failure",
+		"subagent_type": "Code-Reviewer",
+	})
+	if err != nil {
+		t.Fatalf("parseTaskParams custom subagent: %v", err)
+	}
+	if custom.SubagentType != "code-reviewer" {
+		t.Fatalf("expected normalized custom subagent, got %q", custom.SubagentType)
 	}
 }
 

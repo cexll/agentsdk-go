@@ -37,10 +37,10 @@ var taskCreateSchema = &tool.JSONSchema{
 }
 
 type TaskCreateTool struct {
-	store *tasks.TaskStore
+	store tasks.Store
 }
 
-func NewTaskCreateTool(store *tasks.TaskStore) *TaskCreateTool {
+func NewTaskCreateTool(store tasks.Store) *TaskCreateTool {
 	return &TaskCreateTool{store: store}
 }
 

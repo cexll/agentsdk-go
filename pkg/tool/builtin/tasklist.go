@@ -34,10 +34,10 @@ var taskListSchema = &tool.JSONSchema{
 }
 
 type TaskListTool struct {
-	store *tasks.TaskStore
+	store tasks.Store
 }
 
-func NewTaskListTool(store *tasks.TaskStore) *TaskListTool {
+func NewTaskListTool(store tasks.Store) *TaskListTool {
 	return &TaskListTool{store: store}
 }
 

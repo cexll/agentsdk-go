@@ -77,17 +77,19 @@ type Runtime struct {
 	cmdExec   *commands.Executor
 	skReg     *skills.Registry
 	subMgr    *subagents.Manager
+	taskStore tasks.Store
 	tokens    *tokenTracker
 	compactor *compactor
 	tracer    Tracer
 
 	mu sync.RWMutex
 
-	runMu     sync.Mutex
-	runWG     sync.WaitGroup
-	closeOnce sync.Once
-	closeErr  error
-	closed    bool
+	runMu         sync.Mutex
+	runWG         sync.WaitGroup
+	closeOnce     sync.Once
+	closeErr      error
+	closed        bool
+	ownsTaskStore bool
 }
 
 // New instantiates a unified runtime bound to the provided options.
@@ -143,6 +145,11 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		for _, err := range subErrs {
 			log.Printf("subagent loader warning: %v", err)
 		}
+	}
+	ownsTaskStore := false
+	if opts.TaskStore == nil {
+		opts.TaskStore = tasks.NewTaskStore()
+		ownsTaskStore = true
 	}
 	registry := tool.NewRegistry()
 	taskTool, err := registerTools(registry, opts, settings, skReg, cmdExec)
@@ -210,9 +217,11 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		cmdExec:          cmdExec,
 		skReg:            skReg,
 		subMgr:           subMgr,
+		taskStore:        opts.TaskStore,
 		tokens:           newTokenTracker(opts.TokenTracking, opts.TokenCallback),
 		compactor:        compactor,
 		tracer:           tracer,
+		ownsTaskStore:    ownsTaskStore,
 	}
 	rt.sessionGate = newSessionGate()
 
@@ -392,6 +401,11 @@ func (rt *Runtime) Close() error {
 		}
 		if rt.rulesLoader != nil {
 			if e := rt.rulesLoader.Close(); e != nil {
+				err = errors.Join(err, e)
+			}
+		}
+		if rt.ownsTaskStore && rt.taskStore != nil {
+			if e := rt.taskStore.Close(); e != nil {
 				err = errors.Join(err, e)
 			}
 		}
@@ -1449,7 +1463,12 @@ func registerTools(registry *tool.Registry, opts Options, settings *config.Setti
 			cmdExec = commands.NewExecutor()
 		}
 
-		factories := builtinToolFactories(opts.ProjectRoot, sandboxDisabled, entry, settings, skReg, cmdExec)
+		taskStore := opts.TaskStore
+		if taskStore == nil {
+			taskStore = tasks.NewTaskStore()
+		}
+
+		factories := builtinToolFactories(opts.ProjectRoot, sandboxDisabled, entry, settings, skReg, cmdExec, taskStore)
 		names := builtinOrder(entry)
 		selectedNames := filterBuiltinNames(opts.EnabledBuiltinTools, names)
 		for _, name := range selectedNames {
@@ -1521,7 +1540,7 @@ func registerTools(registry *tool.Registry, opts Options, settings *config.Setti
 	return taskTool, nil
 }
 
-func builtinToolFactories(root string, sandboxDisabled bool, entry EntryPoint, settings *config.Settings, skReg *skills.Registry, cmdExec *commands.Executor) map[string]func() tool.Tool {
+func builtinToolFactories(root string, sandboxDisabled bool, entry EntryPoint, settings *config.Settings, skReg *skills.Registry, cmdExec *commands.Executor, taskStore tasks.Store) map[string]func() tool.Tool {
 	factories := map[string]func() tool.Tool{}
 
 	var (
@@ -1599,7 +1618,9 @@ func builtinToolFactories(root string, sandboxDisabled bool, entry EntryPoint, s
 		glob.SetRespectGitignore(respectGitignore)
 		return glob
 	}
-	taskStore := tasks.NewTaskStore()
+	if taskStore == nil {
+		taskStore = tasks.NewTaskStore()
+	}
 
 	factories["bash"] = bashCtor
 	factories["file_read"] = readCtor
