@@ -287,14 +287,14 @@ func TestCacheControl_AllImageMessage_NoCacheSlotWasted(t *testing.T) {
 	}
 }
 
-func TestConvertMessagesToOpenAI_MultimodalDegradesToText(t *testing.T) {
+func TestConvertMessagesToOpenAI_MultimodalUsesImageParts(t *testing.T) {
 	msgs := []Message{
 		{
 			Role:    "user",
 			Content: "fallback text",
 			ContentBlocks: []ContentBlock{
 				{Type: ContentBlockText, Text: "visible text"},
-				{Type: ContentBlockImage, MediaType: "image/png", Data: "dropped"},
+				{Type: ContentBlockImage, MediaType: "image/png", Data: "YWJj"},
 			},
 		},
 	}
@@ -302,15 +302,47 @@ func TestConvertMessagesToOpenAI_MultimodalDegradesToText(t *testing.T) {
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
 	}
-	// OpenAI should get only the text content from TextContent()
 	if result[0].OfUser == nil {
 		t.Fatal("expected user message")
 	}
-	content := result[0].OfUser.Content.OfString
-	if !content.Valid() {
-		t.Fatal("expected valid string content")
+	parts := result[0].OfUser.Content.OfArrayOfContentParts
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 content parts (content+text+image), got %d", len(parts))
 	}
-	if content.Value != "visible text" {
-		t.Fatalf("expected 'visible text', got %q", content.Value)
+	if text := parts[0].GetText(); text == nil || *text != "fallback text" {
+		t.Fatalf("expected first text part 'fallback text', got %v", text)
+	}
+	if text := parts[1].GetText(); text == nil || *text != "visible text" {
+		t.Fatalf("expected second text part 'visible text', got %v", text)
+	}
+	image := parts[2].GetImageURL()
+	if image == nil {
+		t.Fatal("expected image content part")
+	}
+	if image.URL != "data:image/png;base64,YWJj" {
+		t.Fatalf("expected data URI image, got %q", image.URL)
+	}
+}
+
+func TestConvertMessagesToOpenAI_MultimodalImageURL(t *testing.T) {
+	msgs := []Message{
+		{
+			Role: "user",
+			ContentBlocks: []ContentBlock{
+				{Type: ContentBlockImage, URL: "https://example.com/a.png"},
+			},
+		},
+	}
+	result := convertMessagesToOpenAI(msgs)
+	if len(result) != 1 || result[0].OfUser == nil {
+		t.Fatalf("expected one user message, got %+v", result)
+	}
+	parts := result[0].OfUser.Content.OfArrayOfContentParts
+	if len(parts) != 1 {
+		t.Fatalf("expected single image part, got %d", len(parts))
+	}
+	image := parts[0].GetImageURL()
+	if image == nil || image.URL != "https://example.com/a.png" {
+		t.Fatalf("expected image URL part, got %+v", image)
 	}
 }

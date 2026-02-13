@@ -313,6 +313,15 @@ func buildResponsesInput(msgs []Message) responses.ResponseNewParamsInputUnion {
 		}
 	}
 
+	if hasOpenAIImageContentBlocks(msgs) {
+		items := buildResponsesMultimodalInput(msgs)
+		if len(items) > 0 {
+			return responses.ResponseNewParamsInputUnion{
+				OfInputItemList: items,
+			}
+		}
+	}
+
 	// Build a combined prompt from all user messages
 	// The Responses API works best with simple string input
 	var sb strings.Builder
@@ -338,6 +347,138 @@ func buildResponsesInput(msgs []Message) responses.ResponseNewParamsInputUnion {
 	return responses.ResponseNewParamsInputUnion{
 		OfString: param.Opt[string]{Value: content},
 	}
+}
+
+func hasOpenAIImageContentBlocks(msgs []Message) bool {
+	for _, msg := range msgs {
+		for _, block := range msg.ContentBlocks {
+			if block.Type != ContentBlockImage {
+				continue
+			}
+			if openAIImageURL(block) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func buildResponsesMultimodalInput(msgs []Message) responses.ResponseInputParam {
+	items := make(responses.ResponseInputParam, 0, len(msgs))
+	for _, msg := range msgs {
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		switch role {
+		case "user":
+			parts := buildResponsesInputParts(msg)
+			if len(parts) == 0 {
+				continue
+			}
+			items = append(items, responses.ResponseInputItemUnionParam{
+				OfMessage: &responses.EasyInputMessageParam{
+					Role: responses.EasyInputMessageRoleUser,
+					Content: responses.EasyInputMessageContentUnionParam{
+						OfInputItemContentList: parts,
+					},
+				},
+			})
+		case "assistant":
+			parts := buildResponsesInputParts(msg)
+			if len(parts) == 0 {
+				continue
+			}
+			items = append(items, responses.ResponseInputItemUnionParam{
+				OfMessage: &responses.EasyInputMessageParam{
+					Role: responses.EasyInputMessageRoleAssistant,
+					Content: responses.EasyInputMessageContentUnionParam{
+						OfInputItemContentList: parts,
+					},
+				},
+			})
+		case "system", "developer":
+			parts := buildResponsesInputParts(msg)
+			if len(parts) == 0 {
+				continue
+			}
+			items = append(items, responses.ResponseInputItemUnionParam{
+				OfMessage: &responses.EasyInputMessageParam{
+					Role: responses.EasyInputMessageRoleDeveloper,
+					Content: responses.EasyInputMessageContentUnionParam{
+						OfInputItemContentList: parts,
+					},
+				},
+			})
+		case "tool":
+			// Tool results: include as user message with text content.
+			// The Responses API EasyInputMessage doesn't have a tool role.
+			parts := buildResponsesInputParts(msg)
+			if len(parts) == 0 {
+				continue
+			}
+			items = append(items, responses.ResponseInputItemUnionParam{
+				OfMessage: &responses.EasyInputMessageParam{
+					Role: responses.EasyInputMessageRoleUser,
+					Content: responses.EasyInputMessageContentUnionParam{
+						OfInputItemContentList: parts,
+					},
+				},
+			})
+		default:
+			// Unknown roles: map to user
+			parts := buildResponsesInputParts(msg)
+			if len(parts) == 0 {
+				continue
+			}
+			items = append(items, responses.ResponseInputItemUnionParam{
+				OfMessage: &responses.EasyInputMessageParam{
+					Role: responses.EasyInputMessageRoleUser,
+					Content: responses.EasyInputMessageContentUnionParam{
+						OfInputItemContentList: parts,
+					},
+				},
+			})
+		}
+	}
+	return items
+}
+
+func buildResponsesInputParts(msg Message) responses.ResponseInputMessageContentListParam {
+	parts := make(responses.ResponseInputMessageContentListParam, 0, len(msg.ContentBlocks)+1)
+	if text := strings.TrimSpace(msg.Content); text != "" {
+		parts = append(parts, responses.ResponseInputContentUnionParam{
+			OfInputText: &responses.ResponseInputTextParam{
+				Text: text,
+			},
+		})
+	}
+	for _, block := range msg.ContentBlocks {
+		switch block.Type {
+		case ContentBlockText:
+			if text := strings.TrimSpace(block.Text); text != "" {
+				parts = append(parts, responses.ResponseInputContentUnionParam{
+					OfInputText: &responses.ResponseInputTextParam{
+						Text: text,
+					},
+				})
+			}
+		case ContentBlockImage:
+			if imageURL := openAIImageURL(block); imageURL != "" {
+				parts = append(parts, responses.ResponseInputContentUnionParam{
+					OfInputImage: &responses.ResponseInputImageParam{
+						Detail:   responses.ResponseInputImageDetailAuto,
+						ImageURL: param.NewOpt(imageURL),
+					},
+				})
+			}
+		}
+	}
+	if len(parts) == 0 {
+		parts = append(parts, responses.ResponseInputContentUnionParam{
+			OfInputText: &responses.ResponseInputTextParam{
+				Text: ".",
+			},
+		})
+	}
+	return parts
 }
 
 func convertToolsToResponsesAPI(tools []ToolDefinition) []responses.ToolUnionParam {

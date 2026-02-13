@@ -375,11 +375,19 @@ func convertMessagesToOpenAI(msgs []Message, defaults ...string) []openai.ChatCo
 		case "tool":
 			result = append(result, buildOpenAIToolResults(msg)...)
 		default: // user
-			content := msg.Content
 			if len(msg.ContentBlocks) > 0 {
-				content = msg.TextContent()
+				userParam := openai.ChatCompletionUserMessageParam{
+					Content: openai.ChatCompletionUserMessageParamContentUnion{
+						OfArrayOfContentParts: buildOpenAIUserContentParts(msg),
+					},
+				}
+				result = append(result, openai.ChatCompletionMessageParamUnion{
+					OfUser: &userParam,
+				})
+				continue
 			}
-			if strings.TrimSpace(content) == "" {
+			content := strings.TrimSpace(msg.Content)
+			if content == "" {
 				content = "."
 			}
 			result = append(result, openai.UserMessage(content))
@@ -391,6 +399,48 @@ func convertMessagesToOpenAI(msgs []Message, defaults ...string) []openai.ChatCo
 	}
 
 	return result
+}
+
+func buildOpenAIUserContentParts(msg Message) []openai.ChatCompletionContentPartUnionParam {
+	parts := make([]openai.ChatCompletionContentPartUnionParam, 0, len(msg.ContentBlocks)+1)
+	if text := strings.TrimSpace(msg.Content); text != "" {
+		parts = append(parts, openai.TextContentPart(text))
+	}
+	for _, block := range msg.ContentBlocks {
+		switch block.Type {
+		case ContentBlockText:
+			if text := strings.TrimSpace(block.Text); text != "" {
+				parts = append(parts, openai.TextContentPart(text))
+			}
+		case ContentBlockImage:
+			if imageURL := openAIImageURL(block); imageURL != "" {
+				parts = append(parts, openai.ImageContentPart(openai.ChatCompletionContentPartImageImageURLParam{
+					URL: imageURL,
+				}))
+			}
+		}
+	}
+	if len(parts) == 0 {
+		parts = append(parts, openai.TextContentPart("."))
+	}
+	return parts
+}
+
+// openAIImageURL returns a URL or data-URI for the image content block.
+// When MediaType is empty, it defaults to "image/jpeg".
+func openAIImageURL(block ContentBlock) string {
+	if url := strings.TrimSpace(block.URL); url != "" {
+		return url
+	}
+	data := strings.TrimSpace(block.Data)
+	if data == "" {
+		return ""
+	}
+	mediaType := strings.TrimSpace(block.MediaType)
+	if mediaType == "" {
+		mediaType = "image/jpeg" // default when MediaType is unspecified
+	}
+	return "data:" + mediaType + ";base64," + data
 }
 
 func buildOpenAIAssistantMessage(msg Message) openai.ChatCompletionMessageParamUnion {

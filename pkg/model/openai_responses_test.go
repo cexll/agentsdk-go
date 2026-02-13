@@ -214,6 +214,107 @@ func TestBuildResponsesInput(t *testing.T) {
 	}
 }
 
+func TestBuildResponsesInput_MultimodalUserMessage(t *testing.T) {
+	msgs := []Message{
+		{
+			Role:    "user",
+			Content: "describe this",
+			ContentBlocks: []ContentBlock{
+				{Type: ContentBlockText, Text: "in detail"},
+				{Type: ContentBlockImage, MediaType: "image/png", Data: "YWJj"},
+			},
+		},
+	}
+
+	result := buildResponsesInput(msgs)
+	require.Len(t, result.OfInputItemList, 1)
+	item := result.OfInputItemList[0]
+	require.NotNil(t, item.OfMessage)
+	require.Equal(t, responses.EasyInputMessageRoleUser, item.OfMessage.Role)
+
+	parts := item.OfMessage.Content.OfInputItemContentList
+	require.Len(t, parts, 3)
+
+	require.NotNil(t, parts[0].OfInputText)
+	assert.Equal(t, "describe this", parts[0].OfInputText.Text)
+
+	require.NotNil(t, parts[1].OfInputText)
+	assert.Equal(t, "in detail", parts[1].OfInputText.Text)
+
+	require.NotNil(t, parts[2].OfInputImage)
+	require.True(t, parts[2].OfInputImage.ImageURL.Valid())
+	assert.Equal(t, "data:image/png;base64,YWJj", parts[2].OfInputImage.ImageURL.Value)
+}
+
+func TestBuildResponsesInput_MultimodalImageURL(t *testing.T) {
+	msgs := []Message{
+		{
+			Role: "user",
+			ContentBlocks: []ContentBlock{
+				{Type: ContentBlockImage, URL: "https://example.com/vision.png"},
+			},
+		},
+	}
+
+	result := buildResponsesInput(msgs)
+	require.Len(t, result.OfInputItemList, 1)
+	item := result.OfInputItemList[0]
+	require.NotNil(t, item.OfMessage)
+	parts := item.OfMessage.Content.OfInputItemContentList
+	require.Len(t, parts, 1)
+	require.NotNil(t, parts[0].OfInputImage)
+	require.True(t, parts[0].OfInputImage.ImageURL.Valid())
+	assert.Equal(t, "https://example.com/vision.png", parts[0].OfInputImage.ImageURL.Value)
+}
+
+func TestBuildResponsesInput_MultimodalToolMessagePreserved(t *testing.T) {
+	msgs := []Message{
+		{
+			Role:    "user",
+			Content: "describe this",
+			ContentBlocks: []ContentBlock{
+				{Type: ContentBlockImage, MediaType: "image/png", Data: "YWJj"},
+			},
+		},
+		{
+			Role:    "assistant",
+			Content: "I'll call a tool",
+		},
+		{
+			Role:    "tool",
+			Content: "tool result data",
+		},
+		{
+			Role:    "user",
+			Content: "thanks",
+		},
+	}
+
+	result := buildResponsesInput(msgs)
+	// All four messages should be present: user, assistant, tool (as user), user
+	require.Len(t, result.OfInputItemList, 4)
+
+	// First item: user with image
+	require.NotNil(t, result.OfInputItemList[0].OfMessage)
+	assert.Equal(t, responses.EasyInputMessageRoleUser, result.OfInputItemList[0].OfMessage.Role)
+
+	// Second item: assistant
+	require.NotNil(t, result.OfInputItemList[1].OfMessage)
+	assert.Equal(t, responses.EasyInputMessageRoleAssistant, result.OfInputItemList[1].OfMessage.Role)
+
+	// Third item: tool mapped to user
+	require.NotNil(t, result.OfInputItemList[2].OfMessage)
+	assert.Equal(t, responses.EasyInputMessageRoleUser, result.OfInputItemList[2].OfMessage.Role)
+	toolParts := result.OfInputItemList[2].OfMessage.Content.OfInputItemContentList
+	require.Len(t, toolParts, 1)
+	require.NotNil(t, toolParts[0].OfInputText)
+	assert.Equal(t, "tool result data", toolParts[0].OfInputText.Text)
+
+	// Fourth item: user
+	require.NotNil(t, result.OfInputItemList[3].OfMessage)
+	assert.Equal(t, responses.EasyInputMessageRoleUser, result.OfInputItemList[3].OfMessage.Role)
+}
+
 func TestConvertToolsToResponsesAPI(t *testing.T) {
 	tests := []struct {
 		name    string
