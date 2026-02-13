@@ -597,31 +597,10 @@ func mergeEnv(base []string, extra map[string]string) []string {
 
 func newShellCommand(ctx context.Context, command string) *exec.Cmd {
 	trimmed := strings.TrimSpace(command)
-	if trimmed == "" {
-		return exec.CommandContext(ctx, "sh", "-c", trimmed)
-	}
-
-	// When command points to an existing script path, execute it as a script
-	// argument instead of shell-evaluating the path string. This avoids Windows
-	// backslash escaping issues such as "C:\...".
-	if info, err := os.Stat(trimmed); err == nil && !info.IsDir() {
-		if _, shErr := exec.LookPath("sh"); shErr == nil {
-			return exec.CommandContext(ctx, "sh", trimmed)
-		}
-		if runtime.GOOS == "windows" {
-			return exec.CommandContext(ctx, "cmd", "/C", trimmed)
-		}
-		return exec.CommandContext(ctx, trimmed)
-	}
-
-	// General command snippets still go through shell parsing.
-	if _, err := exec.LookPath("sh"); err == nil {
-		return exec.CommandContext(ctx, "sh", "-c", trimmed)
-	}
 	if runtime.GOOS == "windows" {
 		return exec.CommandContext(ctx, "cmd", "/C", trimmed)
 	}
-	return exec.CommandContext(ctx, "sh", "-c", trimmed)
+	return exec.CommandContext(ctx, "/bin/sh", "-c", trimmed)
 }
 
 // extractMatcherTarget returns the string to match against the hook's selector

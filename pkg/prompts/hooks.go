@@ -82,10 +82,10 @@ func parseHooks(fsys fs.FS, dir string) ([]corehooks.ShellHook, []error) {
 			continue
 		}
 
-		path := path.Join(dir, name)
-		content, err := fs.ReadFile(fsys, path)
+		hookPath := path.Join(dir, name)
+		content, err := fs.ReadFile(fsys, hookPath)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("prompts: read hook script %s: %w", path, err))
+			errs = append(errs, fmt.Errorf("prompts: read hook script %s: %w", hookPath, err))
 			continue
 		}
 

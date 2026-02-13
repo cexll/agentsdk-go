@@ -35,6 +35,7 @@ type traceSession struct {
 	timestamp string
 	jsonPath  string
 	htmlPath  string
+	jsonFile  *os.File
 	events    []TraceEvent
 	mu        sync.Mutex
 }
@@ -191,15 +192,13 @@ func (m *TraceMiddleware) newSessionLocked(id string) (*traceSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := file.Close(); err != nil {
-		return nil, err
-	}
 	now := m.now()
 	return &traceSession{
 		id:        id,
 		timestamp: timestamp,
 		jsonPath:  jsonPath,
 		htmlPath:  htmlPath,
+		jsonFile:  file,
 		createdAt: now,
 		updatedAt: now,
 		events:    []TraceEvent{},
@@ -239,8 +238,12 @@ func (sess *traceSession) append(evt TraceEvent, owner *TraceMiddleware) {
 	defer sess.mu.Unlock()
 
 	sess.events = append(sess.events, evt)
-	if err := appendJSONLine(sess.jsonPath, evt); err != nil {
-		owner.logf("write jsonl %s: %v", sess.jsonPath, err)
+	if sess.jsonFile != nil {
+		if err := writeJSONLine(sess.jsonFile, evt); err != nil {
+			owner.logf("write jsonl %s: %v", sess.jsonPath, err)
+		}
+	} else {
+		owner.logf("json file handle missing for %s", sess.id)
 	}
 
 	sess.updatedAt = owner.now()
@@ -261,18 +264,6 @@ func writeJSONLine(f *os.File, evt TraceEvent) error {
 		return err
 	}
 	return nil
-}
-
-func appendJSONLine(path string, evt TraceEvent) error {
-	if strings.TrimSpace(path) == "" {
-		return nil
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return writeJSONLine(f, evt)
 }
 
 func (m *TraceMiddleware) renderHTML(sess *traceSession) error {
