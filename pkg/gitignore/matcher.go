@@ -127,7 +127,7 @@ func parseLine(line, relDir string) (pattern, bool) {
 		}
 	}
 
-	p.pattern = line
+	p.pattern = filepath.ToSlash(line)
 	return p, true
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -57,7 +58,7 @@ func parseHooks(fsys fs.FS, dir string) ([]corehooks.ShellHook, []error) {
 	}
 
 	// Try to load hooks.json first
-	jsonPath := filepath.Join(dir, "hooks.json")
+	jsonPath := path.Join(dir, "hooks.json")
 	if content, err := fs.ReadFile(fsys, jsonPath); err == nil {
 		parsed, parseErrs := parseHooksJSON(content)
 		hooks = append(hooks, parsed...)
@@ -81,10 +82,10 @@ func parseHooks(fsys fs.FS, dir string) ([]corehooks.ShellHook, []error) {
 			continue
 		}
 
-		path := filepath.Join(dir, name)
-		content, err := fs.ReadFile(fsys, path)
+		hookPath := path.Join(dir, name)
+		content, err := fs.ReadFile(fsys, hookPath)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("prompts: read hook script %s: %w", path, err))
+			errs = append(errs, fmt.Errorf("prompts: read hook script %s: %w", hookPath, err))
 			continue
 		}
 
@@ -187,7 +188,7 @@ func parseEventTypeFromFilename(name string) events.EventType {
 	mapping := map[string]events.EventType{
 		"pretooluse":         events.PreToolUse,
 		"posttooluse":        events.PostToolUse,
-		"posttooluseFailure": events.PostToolUseFailure,
+		"posttoolusefailure": events.PostToolUseFailure,
 		"precompact":         events.PreCompact,
 		"contextcompacted":   events.ContextCompacted,
 		"userpromptsubmit":   events.UserPromptSubmit,

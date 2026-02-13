@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -331,7 +332,7 @@ func (e *Executor) executeHook(ctx context.Context, hook ShellHook, payload []by
 	runCtx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, "/bin/sh", "-c", cmdStr)
+	cmd := newShellCommand(runCtx, cmdStr)
 	cmd.Env = mergeEnv(os.Environ(), hook.Env)
 	if e.workDir != "" {
 		cmd.Dir = e.workDir
@@ -592,6 +593,14 @@ func mergeEnv(base []string, extra map[string]string) []string {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
 	}
 	return env
+}
+
+func newShellCommand(ctx context.Context, command string) *exec.Cmd {
+	trimmed := strings.TrimSpace(command)
+	if runtime.GOOS == "windows" {
+		return exec.CommandContext(ctx, "cmd", "/C", trimmed)
+	}
+	return exec.CommandContext(ctx, "/bin/sh", "-c", trimmed)
 }
 
 // extractMatcherTarget returns the string to match against the hook's selector

@@ -1,8 +1,10 @@
 package sandbox
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -51,6 +53,9 @@ func TestFileSystemAllowListSymlink(t *testing.T) {
 
 	link := filepath.Join(root, "secret-link")
 	if err := os.Symlink(outside, link); err != nil {
+		if runtime.GOOS == "windows" && (errors.Is(err, os.ErrPermission) || strings.Contains(strings.ToLower(err.Error()), "privilege")) {
+			t.Skipf("symlink requires extra privilege on windows: %v", err)
+		}
 		t.Fatalf("symlink: %v", err)
 	}
 

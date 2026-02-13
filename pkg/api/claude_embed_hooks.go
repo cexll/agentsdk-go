@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -35,7 +36,7 @@ func materializeEmbeddedClaudeHooks(projectRoot string, embedFS fs.FS) error {
 		return fmt.Errorf("embedded %s is not a directory", embeddedClaudeHooksDir)
 	}
 
-	return fs.WalkDir(embedFS, embeddedClaudeHooksDir, func(path string, d fs.DirEntry, walkErr error) error {
+	return fs.WalkDir(embedFS, embeddedClaudeHooksDir, func(embedPath string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -43,13 +44,13 @@ func materializeEmbeddedClaudeHooks(projectRoot string, embedFS fs.FS) error {
 			return nil
 		}
 
-		rel := filepath.Clean(filepath.FromSlash(path))
-		prefix := embeddedClaudeHooksDir + string(filepath.Separator)
+		rel := path.Clean(embedPath)
+		prefix := embeddedClaudeHooksDir + "/"
 		if rel != embeddedClaudeHooksDir && !strings.HasPrefix(rel, prefix) {
 			return nil
 		}
 
-		dest := filepath.Join(root, rel)
+		dest := filepath.Join(root, filepath.FromSlash(rel))
 		if _, err := os.Stat(dest); err == nil {
 			return nil
 		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -60,9 +61,9 @@ func materializeEmbeddedClaudeHooks(projectRoot string, embedFS fs.FS) error {
 			return fmt.Errorf("mkdir %s: %w", filepath.Dir(dest), err)
 		}
 
-		data, err := fs.ReadFile(embedFS, path)
+		data, err := fs.ReadFile(embedFS, embedPath)
 		if err != nil {
-			return fmt.Errorf("read embedded %s: %w", path, err)
+			return fmt.Errorf("read embedded %s: %w", embedPath, err)
 		}
 
 		tmp := dest + ".tmp"

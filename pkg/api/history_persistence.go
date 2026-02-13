@@ -115,6 +115,17 @@ func (p *diskHistoryPersister) Cleanup(retainDays int) error {
 	if dir == "" {
 		return nil
 	}
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read history dir: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("read history dir: %w", os.ErrInvalid)
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

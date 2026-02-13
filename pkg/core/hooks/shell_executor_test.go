@@ -515,10 +515,20 @@ func TestAsyncHookFireAndForget(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "async_marker")
-	script := writeScript(t, dir, "async.sh", fmt.Sprintf("#!/bin/sh\ntouch %q\n", marker))
-
-	exec := NewExecutor()
-	exec.Register(ShellHook{Event: events.Notification, Command: script, Async: true})
+	errCh := make(chan error, 1)
+	exec := NewExecutor(
+		WithWorkDir(dir),
+		WithErrorHandler(func(_ events.EventType, err error) {
+			if err == nil {
+				return
+			}
+			select {
+			case errCh <- err:
+			default:
+			}
+		}),
+	)
+	exec.Register(ShellHook{Event: events.Notification, Command: ": > async_marker", Async: true})
 
 	results, err := exec.Execute(context.Background(), events.Event{Type: events.Notification})
 	if err != nil {
@@ -528,10 +538,26 @@ func TestAsyncHookFireAndForget(t *testing.T) {
 	if len(results) != 0 {
 		t.Fatalf("expected 0 results for async, got %d", len(results))
 	}
-	// Wait for async to complete
-	time.Sleep(200 * time.Millisecond)
-	if _, err := os.Stat(marker); os.IsNotExist(err) {
-		t.Fatal("async hook did not execute")
+	// Wait for async to complete on slower systems.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		select {
+		case execErr := <-errCh:
+			t.Fatalf("async hook returned error: %v", execErr)
+		default:
+		}
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			select {
+			case execErr := <-errCh:
+				t.Fatalf("async hook returned error: %v", execErr)
+			default:
+			}
+			t.Fatal("async hook did not execute")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

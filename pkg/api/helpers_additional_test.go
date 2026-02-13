@@ -1,8 +1,11 @@
 package api
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -11,6 +14,9 @@ func TestResolveProjectRootFromEnv(t *testing.T) {
 	linkDir := t.TempDir()
 	link := filepath.Join(linkDir, "link")
 	if err := os.Symlink(root, link); err != nil {
+		if runtime.GOOS == "windows" && (errors.Is(err, os.ErrPermission) || strings.Contains(strings.ToLower(err.Error()), "privilege")) {
+			t.Skipf("symlink requires extra privilege on windows: %v", err)
+		}
 		t.Fatalf("symlink: %v", err)
 	}
 	t.Setenv("AGENTSDK_PROJECT_ROOT", link)

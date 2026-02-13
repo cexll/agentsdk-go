@@ -135,17 +135,15 @@ func (f *FS) toEmbedPath(path string) string {
 
 	pathSlash := normalizeSlashes(absPath)
 	rootSlash := normalizeSlashes(f.projectRoot)
-	if rootSlash != "" && strings.HasPrefix(pathSlash, rootSlash) {
+	if rootSlash != "" {
+		rootPrefix := strings.TrimRight(rootSlash, "/")
 		switch {
-		case len(pathSlash) == len(rootSlash):
+		case rootPrefix == "":
+			pathSlash = strings.TrimLeft(pathSlash, "/")
+		case pathSlash == rootPrefix:
 			pathSlash = ""
-		case len(pathSlash) > len(rootSlash):
-			next := pathSlash[len(rootSlash)]
-			if next == '/' {
-				pathSlash = pathSlash[len(rootSlash)+1:]
-			} else if rootSlash == "/" {
-				pathSlash = pathSlash[len(rootSlash):]
-			}
+		case strings.HasPrefix(pathSlash, rootPrefix+"/"):
+			pathSlash = strings.TrimPrefix(pathSlash, rootPrefix+"/")
 		}
 	}
 

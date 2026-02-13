@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -90,6 +91,9 @@ func TestGenerateAsyncTaskIDFallback(t *testing.T) {
 }
 
 func TestResolveRootDeletedCwd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows does not allow removing current working directory")
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)

@@ -45,6 +45,20 @@ func (l *RulesLoader) rulesDir() string {
 
 func (l *RulesLoader) LoadRules() ([]Rule, error) {
 	dir := l.rulesDir()
+	info, err := os.Stat(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			l.mu.Lock()
+			l.rules = nil
+			l.mu.Unlock()
+			return nil, nil
+		}
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fs.ErrInvalid
+	}
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {

@@ -14,7 +14,11 @@ func TestAdditionalSandboxPathsHandlesNilAndDedup(t *testing.T) {
 
 	settings := &config.Settings{Permissions: &config.PermissionsConfig{AdditionalDirectories: []string{" /tmp ", "/tmp"}}}
 	extras := additionalSandboxPaths(settings)
-	if len(extras) != 1 || filepath.Clean(extras[0]) != "/tmp" {
+	want, err := filepath.Abs("/tmp")
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	if len(extras) != 1 || filepath.Clean(extras[0]) != filepath.Clean(want) {
 		t.Fatalf("expected deduped absolute path, got %+v", extras)
 	}
 }

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"path/filepath"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -113,37 +113,37 @@ func parseSkills(fsys fs.FS, dir string, validate bool) ([]SkillRegistration, []
 		}
 
 		dirName := entry.Name()
-		path := filepath.Join(dir, dirName, "SKILL.md")
-		content, err := fs.ReadFile(fsys, path)
+		skillPath := path.Join(dir, dirName, "SKILL.md")
+		content, err := fs.ReadFile(fsys, skillPath)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
-			errs = append(errs, fmt.Errorf("prompts: read skill %s: %w", path, err))
+			errs = append(errs, fmt.Errorf("prompts: read skill %s: %w", skillPath, err))
 			continue
 		}
 
 		meta, body, err := parseSkillFrontMatter(string(content))
 		if err != nil {
-			errs = append(errs, fmt.Errorf("prompts: parse skill %s: %w", path, err))
+			errs = append(errs, fmt.Errorf("prompts: parse skill %s: %w", skillPath, err))
 			continue
 		}
 
 		if meta.Name != "" && dirName != "" && meta.Name != dirName {
-			errs = append(errs, fmt.Errorf("prompts: skill name %q does not match directory %q in %s", meta.Name, dirName, path))
+			errs = append(errs, fmt.Errorf("prompts: skill name %q does not match directory %q in %s", meta.Name, dirName, skillPath))
 			continue
 		}
 
 		if validate {
 			if err := validateSkillMetadata(meta); err != nil {
-				errs = append(errs, fmt.Errorf("prompts: validate skill %s: %w", path, err))
+				errs = append(errs, fmt.Errorf("prompts: validate skill %s: %w", skillPath, err))
 				continue
 			}
 		}
 
 		files = append(files, skillFile{
 			name: meta.Name,
-			path: path,
+			path: skillPath,
 			meta: meta,
 			body: body,
 		})
@@ -176,10 +176,10 @@ func parseSkills(fsys fs.FS, dir string, validate bool) ([]SkillRegistration, []
 
 		body := file.body
 		meta := file.meta
-		path := file.path
+		skillPath := file.path
 		handler := skills.HandlerFunc(func(_ context.Context, _ skills.ActivationContext) (skills.Result, error) {
 			output := map[string]any{"body": body}
-			resultMeta := map[string]any{"source": path}
+			resultMeta := map[string]any{"source": skillPath}
 			if len(meta.AllowedTools) > 0 {
 				resultMeta["allowed-tools"] = []string(meta.AllowedTools)
 			}
