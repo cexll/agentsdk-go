@@ -22,10 +22,10 @@ func TestExecuteSerializesPayloadAndParsesOutput(t *testing.T) {
 	dir := t.TempDir()
 	payloadPath := filepath.Join(dir, "payload.json")
 
-	script := writeScript(t, dir, "dump_and_allow.sh", fmt.Sprintf(`#!/bin/sh
-cat > "%s"
-printf '{"decision":"allow","reason":"ok","hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"path":"/tmp/new"}}}'
-`, payloadPath))
+	script := writeScript(t, dir, "dump_and_allow.sh", shScript(
+		fmt.Sprintf("#!/bin/sh\ncat > \"%s\"\nprintf '{\"decision\":\"allow\",\"reason\":\"ok\",\"hookSpecificOutput\":{\"permissionDecision\":\"allow\",\"updatedInput\":{\"path\":\"/tmp/new\"}}}'\n", payloadPath),
+		fmt.Sprintf("@findstr \"^\" > \"%s\"\r\n@echo {\"decision\":\"allow\",\"reason\":\"ok\",\"hookSpecificOutput\":{\"permissionDecision\":\"allow\",\"updatedInput\":{\"path\":\"/tmp/new\"}}}\r\n", payloadPath),
+	))
 
 	exec := NewExecutor()
 	exec.Register(ShellHook{Event: events.PreToolUse, Command: script})
@@ -107,7 +107,10 @@ func TestExitCodeMapping(t *testing.T) {
 		tc := tc
 		t.Run(fmt.Sprintf("exit_%d", tc.code), func(t *testing.T) {
 			t.Parallel()
-			script := writeScript(t, dir, fmt.Sprintf("exit_%d.sh", tc.code), fmt.Sprintf("#!/bin/sh\nexit %d\n", tc.code))
+			script := writeScript(t, dir, fmt.Sprintf("exit_%d.sh", tc.code), shScript(
+				fmt.Sprintf("#!/bin/sh\nexit %d\n", tc.code),
+				fmt.Sprintf("@exit /b %d\r\n", tc.code),
+			))
 			exec := NewExecutor()
 			exec.Register(ShellHook{Event: events.Notification, Command: script})
 			evt := events.Event{Type: events.Notification, Payload: events.NotificationPayload{Message: "hi"}}
@@ -132,7 +135,10 @@ func TestExitCodeMapping(t *testing.T) {
 func TestTimeoutIsHonored(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	script := writeScript(t, dir, "slow.sh", "#!/bin/sh\nsleep 1\n")
+	script := writeScript(t, dir, "slow.sh", shScript(
+		"#!/bin/sh\nsleep 1\n",
+		"@ping -n 2 127.0.0.1 >nul\r\n",
+	))
 
 	exec := NewExecutor(WithTimeout(100 * time.Millisecond))
 	exec.Register(ShellHook{Event: events.Notification, Command: script})
@@ -147,7 +153,10 @@ func TestStderrCapturedOnBlockingError(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	// Exit 2 = blocking error
-	script := writeScript(t, dir, "stderr.sh", "#!/bin/sh\necho boom >&2\nexit 2\n")
+	script := writeScript(t, dir, "stderr.sh", shScript(
+		"#!/bin/sh\necho boom >&2\nexit 2\n",
+		"@echo boom >&2\r\n@exit /b 2\r\n",
+	))
 
 	exec := NewExecutor()
 	exec.Register(ShellHook{Event: events.Notification, Command: script})
@@ -162,7 +171,10 @@ func TestNonBlockingExitContinues(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	// Exit 3 = non-blocking, should not error
-	script := writeScript(t, dir, "nonblock.sh", "#!/bin/sh\necho warning >&2\nexit 3\n")
+	script := writeScript(t, dir, "nonblock.sh", shScript(
+		"#!/bin/sh\necho warning >&2\nexit 3\n",
+		"@echo warning >&2\r\n@exit /b 3\r\n",
+	))
 
 	var reportedErr error
 	exec := NewExecutor(WithErrorHandler(func(_ events.EventType, err error) {
@@ -185,7 +197,10 @@ func TestNonBlockingExitContinues(t *testing.T) {
 func TestSelectorFiltersMatcherTarget(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	script := writeScript(t, dir, "ok.sh", "#!/bin/sh\nexit 0\n")
+	script := writeScript(t, dir, "ok.sh", shScript(
+		"#!/bin/sh\nexit 0\n",
+		"@exit /b 0\r\n",
+	))
 
 	sel, err := NewSelector("^Write$", "")
 	if err != nil {
@@ -216,7 +231,10 @@ func TestSelectorFiltersMatcherTarget(t *testing.T) {
 func TestConcurrentCallsAreIsolated(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	script := writeScript(t, dir, "slow.sh", "#!/bin/sh\nsleep 0.05\n")
+	script := writeScript(t, dir, "slow.sh", shScript(
+		"#!/bin/sh\nsleep 0.05\n",
+		"@ping -n 1 127.0.0.1 >nul\r\n",
+	))
 
 	exec := NewExecutor()
 	exec.Register(ShellHook{Event: events.Notification, Command: script})
@@ -241,7 +259,10 @@ func TestConcurrentCallsAreIsolated(t *testing.T) {
 func TestDefaultCommandFallbackAndPublishWrapper(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	script := writeScript(t, dir, "default.sh", "#!/bin/sh\necho '{\"decision\":\"allow\"}'\n")
+	script := writeScript(t, dir, "default.sh", shScript(
+		"#!/bin/sh\necho '{\"decision\":\"allow\"}'\n",
+		"@echo {\"decision\":\"allow\"}\r\n",
+	))
 
 	exec := NewExecutor(WithCommand(script))
 	// No hooks registered — should use default command
@@ -262,7 +283,10 @@ func TestDefaultCommandFallbackAndPublishWrapper(t *testing.T) {
 func TestMiddlewareAndErrorHandler(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	script := writeScript(t, dir, "ok.sh", "#!/bin/sh\nexit 0\n")
+	script := writeScript(t, dir, "ok.sh", shScript(
+		"#!/bin/sh\nexit 0\n",
+		"@exit /b 0\r\n",
+	))
 
 	var called bool
 	mw := func(next middleware.Handler) middleware.Handler {
@@ -287,7 +311,10 @@ func TestMiddlewareAndErrorHandler(t *testing.T) {
 func TestEnvIsMergedIntoCommand(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	script := writeScript(t, dir, "env.sh", "#!/bin/sh\necho $MY_HOOK_VAR >&2\n")
+	script := writeScript(t, dir, "env.sh", shScript(
+		"#!/bin/sh\necho $MY_HOOK_VAR >&2\n",
+		"@echo %MY_HOOK_VAR% >&2\r\n",
+	))
 
 	exec := NewExecutor()
 	exec.Register(ShellHook{
@@ -529,7 +556,7 @@ func TestAsyncHookFireAndForget(t *testing.T) {
 			}
 		}),
 	)
-	exec.Register(ShellHook{Event: events.Notification, Command: ": > async_marker", Async: true})
+	exec.Register(ShellHook{Event: events.Notification, Command: shCmd(": > async_marker", "type nul > async_marker"), Async: true})
 
 	results, err := exec.Execute(context.Background(), events.Event{Type: events.Notification})
 	if err != nil {
@@ -567,7 +594,10 @@ func TestOnceHookExecutesOnlyOnce(t *testing.T) {
 	dir := t.TempDir()
 	counter := filepath.Join(dir, "counter")
 	// Append a line each time the hook runs
-	script := writeScript(t, dir, "once.sh", fmt.Sprintf("#!/bin/sh\necho x >> %q\n", counter))
+	script := writeScript(t, dir, "once.sh", shScript(
+		fmt.Sprintf("#!/bin/sh\necho x >> %q\n", counter),
+		fmt.Sprintf("@echo x >> \"%s\"\r\n", counter),
+	))
 
 	exec := NewExecutor()
 	exec.Register(ShellHook{Event: events.Notification, Command: script, Once: true, Name: "once-hook"})
@@ -628,7 +658,10 @@ func TestBuildPayloadUnsupportedType(t *testing.T) {
 func TestExecuteAcceptsAllValidEvents(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	script := writeScript(t, dir, "noop.sh", "#!/bin/sh\nexit 0\n")
+	script := writeScript(t, dir, "noop.sh", shScript(
+		"#!/bin/sh\nexit 0\n",
+		"@exit /b 0\r\n",
+	))
 
 	validEvents := []events.EventType{
 		events.PreToolUse, events.PostToolUse, events.PostToolUseFailure,
@@ -662,12 +695,32 @@ func TestNewShellCommandPrefersBinShOnUnix(t *testing.T) {
 	}
 }
 
-// writeScript creates an executable shell script in dir and returns its path.
+// writeScript creates an executable script in dir and returns its path.
+// On Windows the file is written as a .bat; on Unix as a .sh with mode 0700.
 func writeScript(t *testing.T, dir, name, content string) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		name = strings.TrimSuffix(name, ".sh") + ".bat"
+	}
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(content), 0o700); err != nil { //nolint:gosec // test helper needs executable scripts
 		t.Fatalf("writeScript: %v", err)
 	}
 	return path
+}
+
+// shScript returns platform-appropriate script content.
+func shScript(unix, win string) string {
+	if runtime.GOOS == "windows" {
+		return win
+	}
+	return unix
+}
+
+// shCmd returns a platform-appropriate inline command string.
+func shCmd(unix, win string) string {
+	if runtime.GOOS == "windows" {
+		return win
+	}
+	return unix
 }

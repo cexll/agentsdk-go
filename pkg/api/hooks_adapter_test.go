@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	coreevents "github.com/cexll/agentsdk-go/pkg/core/events"
@@ -16,9 +18,10 @@ func TestPreToolUseAllowsInputModification(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	// Exit 0 with JSON containing hookSpecificOutput.updatedInput
-	script := writeScript(t, dir, "modify.sh", `#!/bin/sh
-printf '{"hookSpecificOutput":{"updatedInput":{"k":"v2"}}}'
-`)
+	script := writeScript(t, dir, "modify.sh", shScript(
+		"#!/bin/sh\nprintf '{\"hookSpecificOutput\":{\"updatedInput\":{\"k\":\"v2\"}}}'\n",
+		"@echo {\"hookSpecificOutput\":{\"updatedInput\":{\"k\":\"v2\"}}}\r\n",
+	))
 
 	exec := corehooks.NewExecutor()
 	exec.Register(corehooks.ShellHook{Event: coreevents.PreToolUse, Command: script})
@@ -40,9 +43,10 @@ func TestPreToolUseDeniesExecution(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	// Exit 0 with JSON decision=deny
-	script := writeScript(t, dir, "deny.sh", `#!/bin/sh
-printf '{"decision":"deny","reason":"blocked"}'
-`)
+	script := writeScript(t, dir, "deny.sh", shScript(
+		"#!/bin/sh\nprintf '{\"decision\":\"deny\",\"reason\":\"blocked\"}'\n",
+		"@echo {\"decision\":\"deny\",\"reason\":\"blocked\"}\r\n",
+	))
 
 	exec := corehooks.NewExecutor()
 	exec.Register(corehooks.ShellHook{Event: coreevents.PreToolUse, Command: script})
@@ -67,7 +71,7 @@ func TestPreToolUseBlockingError(t *testing.T) {
 	exec := corehooks.NewExecutor()
 	exec.Register(corehooks.ShellHook{
 		Event:   coreevents.PreToolUse,
-		Command: "echo blocked >&2; exit 2",
+		Command: shCmd("echo blocked >&2; exit 2", "echo blocked >&2 & exit /b 2"),
 	})
 	adapter := &runtimeHookAdapter{executor: exec}
 
@@ -84,9 +88,10 @@ func TestPreToolUseAsksForApproval(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	// Exit 0 with JSON hookSpecificOutput.permissionDecision=ask
-	script := writeScript(t, dir, "ask.sh", `#!/bin/sh
-printf '{"hookSpecificOutput":{"permissionDecision":"ask"}}'
-`)
+	script := writeScript(t, dir, "ask.sh", shScript(
+		"#!/bin/sh\nprintf '{\"hookSpecificOutput\":{\"permissionDecision\":\"ask\"}}'\n",
+		"@echo {\"hookSpecificOutput\":{\"permissionDecision\":\"ask\"}}\r\n",
+	))
 
 	exec := corehooks.NewExecutor()
 	exec.Register(corehooks.ShellHook{Event: coreevents.PreToolUse, Command: script})
@@ -121,7 +126,10 @@ func TestPermissionRequestDecisionMapping(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			script := writeScript(t, dir, tc.name+".sh", fmt.Sprintf("#!/bin/sh\nprintf '%s'\n", tc.output))
+			script := writeScript(t, dir, tc.name+".sh", shScript(
+				fmt.Sprintf("#!/bin/sh\nprintf '%s'\n", tc.output),
+				fmt.Sprintf("@echo %s\r\n", tc.output),
+			))
 			exec := corehooks.NewExecutor()
 			exec.Register(corehooks.ShellHook{
 				Event:   coreevents.PermissionRequest,
@@ -179,6 +187,9 @@ func TestRuntimeHookAdapterNewEventsRecord(t *testing.T) {
 
 func writeScript(t *testing.T, dir, name, content string) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		name = strings.TrimSuffix(name, ".sh") + ".bat"
+	}
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write script: %v", err)
@@ -187,4 +198,18 @@ func writeScript(t *testing.T, dir, name, content string) string {
 		t.Fatalf("chmod script: %v", err)
 	}
 	return path
+}
+
+func shScript(unix, win string) string {
+	if runtime.GOOS == "windows" {
+		return win
+	}
+	return unix
+}
+
+func shCmd(unix, win string) string {
+	if runtime.GOOS == "windows" {
+		return win
+	}
+	return unix
 }

@@ -17,8 +17,13 @@ func TestExecutorWithWorkDirAndClose(t *testing.T) {
 		dir = resolved
 	}
 	exec := NewExecutor(WithWorkDir(dir))
-	// Use stderr for output since exit 0 stdout is parsed as JSON
-	exec.Register(ShellHook{Event: events.Notification, Command: "pwd >&2"})
+	// Use stderr for output since exit 0 stdout is parsed as JSON.
+	// On Windows cmd, "cd" prints the current directory; on Unix, "pwd" does.
+	if runtime.GOOS == "windows" {
+		exec.Register(ShellHook{Event: events.Notification, Command: "cd >&2"})
+	} else {
+		exec.Register(ShellHook{Event: events.Notification, Command: "pwd >&2"})
+	}
 
 	results, err := exec.Execute(context.Background(), events.Event{Type: events.Notification})
 	if err != nil || len(results) == 0 {

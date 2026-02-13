@@ -12,6 +12,7 @@ func TestTraceMiddlewareRecords(t *testing.T) {
 
 	dir := t.TempDir()
 	tm := NewTraceMiddleware(dir)
+	defer tm.Close()
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "sess")
 	st := &State{Iteration: 1, Values: map[string]any{}}
 	if err := tm.BeforeAgent(ctx, st); err != nil {

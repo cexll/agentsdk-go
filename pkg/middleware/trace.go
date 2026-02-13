@@ -129,6 +129,23 @@ func (m *TraceMiddleware) AfterAgent(ctx context.Context, st *State) error {
 	return nil
 }
 
+// Close releases all open file handles held by trace sessions.
+func (m *TraceMiddleware) Close() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, sess := range m.sessions {
+		sess.mu.Lock()
+		if sess.jsonFile != nil {
+			sess.jsonFile.Close()
+			sess.jsonFile = nil
+		}
+		sess.mu.Unlock()
+	}
+}
+
 func (m *TraceMiddleware) record(ctx context.Context, stage Stage, st *State) {
 	if m == nil || st == nil {
 		return

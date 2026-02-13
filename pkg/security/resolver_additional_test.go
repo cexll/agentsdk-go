@@ -23,19 +23,63 @@ func TestSplitPathForWalk(t *testing.T) {
 			wantRoot:  "",
 			wantParts: []string{"a", "b", "c"},
 		},
-		{
-			name:      "absolute root only",
-			input:     sep,
-			wantRoot:  sep,
-			wantParts: nil,
-		},
-		{
-			name:      "absolute with parts",
-			input:     sep + filepath.Join("usr", "local", "bin"),
-			wantRoot:  sep,
-			wantParts: []string{"usr", "local", "bin"},
-		},
 	}
+
+	// Absolute path tests differ by platform: on Windows, bare "\" is not
+	// considered absolute by filepath.IsAbs (it's root-relative without a
+	// volume). Use a volume-qualified root instead.
+	if runtime.GOOS == "windows" {
+		tests = append(tests,
+			struct {
+				name      string
+				input     string
+				wantRoot  string
+				wantParts []string
+			}{
+				name:      "absolute root only",
+				input:     `C:\`,
+				wantRoot:  `C:\`,
+				wantParts: nil,
+			},
+			struct {
+				name      string
+				input     string
+				wantRoot  string
+				wantParts []string
+			}{
+				name:      "absolute with parts",
+				input:     `C:\usr\local\bin`,
+				wantRoot:  `C:\`,
+				wantParts: []string{"usr", "local", "bin"},
+			},
+		)
+	} else {
+		tests = append(tests,
+			struct {
+				name      string
+				input     string
+				wantRoot  string
+				wantParts []string
+			}{
+				name:      "absolute root only",
+				input:     sep,
+				wantRoot:  sep,
+				wantParts: nil,
+			},
+			struct {
+				name      string
+				input     string
+				wantRoot  string
+				wantParts []string
+			}{
+				name:      "absolute with parts",
+				input:     sep + filepath.Join("usr", "local", "bin"),
+				wantRoot:  sep,
+				wantParts: []string{"usr", "local", "bin"},
+			},
+		)
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root, parts := splitPathForWalk(tt.input)

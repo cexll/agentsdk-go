@@ -50,9 +50,10 @@ func TestRuntimeHookAdapterErrorPaths(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	badScript := writeScript(t, dir, "bad.sh", `#!/bin/sh
-echo '{bad'
-`)
+	badScript := writeScript(t, dir, "bad.sh", shScript(
+		"#!/bin/sh\necho '{bad'\n",
+		"@echo {bad\r\n",
+	))
 
 	exec := corehooks.NewExecutor()
 	exec.Register(corehooks.ShellHook{Event: coreevents.PreToolUse, Command: badScript})
@@ -64,14 +65,14 @@ echo '{bad'
 
 	// Exit 2 = blocking error
 	failExec := corehooks.NewExecutor()
-	failExec.Register(corehooks.ShellHook{Event: coreevents.PostToolUse, Command: "echo fail >&2; exit 2"})
+	failExec.Register(corehooks.ShellHook{Event: coreevents.PostToolUse, Command: shCmd("echo fail >&2; exit 2", "echo fail >&2 & exit /b 2")})
 	failAdapter := &runtimeHookAdapter{executor: failExec}
 	if err := failAdapter.PostToolUse(context.Background(), coreevents.ToolResultPayload{Name: "Echo"}); err == nil {
 		t.Fatalf("expected post tool use error")
 	}
 
 	permExec := corehooks.NewExecutor()
-	permExec.Register(corehooks.ShellHook{Event: coreevents.PermissionRequest, Command: "echo perm-fail >&2; exit 2"})
+	permExec.Register(corehooks.ShellHook{Event: coreevents.PermissionRequest, Command: shCmd("echo perm-fail >&2; exit 2", "echo perm-fail >&2 & exit /b 2")})
 	permAdapter := &runtimeHookAdapter{executor: permExec}
 	if _, err := permAdapter.PermissionRequest(context.Background(), coreevents.PermissionRequestPayload{ToolName: "Bash"}); err == nil {
 		t.Fatalf("expected permission request error")
@@ -79,7 +80,7 @@ echo '{bad'
 
 	// Exit 2 = blocking error for UserPrompt
 	publishExec := corehooks.NewExecutor()
-	publishExec.Register(corehooks.ShellHook{Event: coreevents.UserPromptSubmit, Command: "echo fail >&2; exit 2"})
+	publishExec.Register(corehooks.ShellHook{Event: coreevents.UserPromptSubmit, Command: shCmd("echo fail >&2; exit 2", "echo fail >&2 & exit /b 2")})
 	publishAdapter := &runtimeHookAdapter{executor: publishExec}
 	if err := publishAdapter.UserPrompt(context.Background(), "hi"); err == nil {
 		t.Fatalf("expected user prompt error")
@@ -87,7 +88,7 @@ echo '{bad'
 
 	// Exit 2 = blocking error for Stop
 	notifyExec := corehooks.NewExecutor()
-	notifyExec.Register(corehooks.ShellHook{Event: coreevents.Stop, Command: "echo fail >&2; exit 2"})
+	notifyExec.Register(corehooks.ShellHook{Event: coreevents.Stop, Command: shCmd("echo fail >&2; exit 2", "echo fail >&2 & exit /b 2")})
 	notifyAdapter := &runtimeHookAdapter{executor: notifyExec}
 	if err := notifyAdapter.Stop(context.Background(), strings.Repeat("x", 1)); err == nil {
 		t.Fatalf("expected stop error")
