@@ -426,6 +426,8 @@ func buildOpenAIUserContentParts(msg Message) []openai.ChatCompletionContentPart
 	return parts
 }
 
+// openAIImageURL returns a URL or data-URI for the image content block.
+// When MediaType is empty, it defaults to "image/jpeg".
 func openAIImageURL(block ContentBlock) string {
 	if url := strings.TrimSpace(block.URL); url != "" {
 		return url
@@ -436,7 +438,7 @@ func openAIImageURL(block ContentBlock) string {
 	}
 	mediaType := strings.TrimSpace(block.MediaType)
 	if mediaType == "" {
-		mediaType = "image/jpeg"
+		mediaType = "image/jpeg" // default when MediaType is unspecified
 	}
 	return "data:" + mediaType + ";base64," + data
 }

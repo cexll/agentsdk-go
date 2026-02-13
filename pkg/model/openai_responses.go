@@ -367,21 +367,76 @@ func buildResponsesMultimodalInput(msgs []Message) responses.ResponseInputParam 
 	items := make(responses.ResponseInputParam, 0, len(msgs))
 	for _, msg := range msgs {
 		role := strings.ToLower(strings.TrimSpace(msg.Role))
-		if role != "user" {
-			continue
-		}
-		parts := buildResponsesInputParts(msg)
-		if len(parts) == 0 {
-			continue
-		}
-		items = append(items, responses.ResponseInputItemUnionParam{
-			OfMessage: &responses.EasyInputMessageParam{
-				Role: responses.EasyInputMessageRoleUser,
-				Content: responses.EasyInputMessageContentUnionParam{
-					OfInputItemContentList: parts,
+		switch role {
+		case "user":
+			parts := buildResponsesInputParts(msg)
+			if len(parts) == 0 {
+				continue
+			}
+			items = append(items, responses.ResponseInputItemUnionParam{
+				OfMessage: &responses.EasyInputMessageParam{
+					Role: responses.EasyInputMessageRoleUser,
+					Content: responses.EasyInputMessageContentUnionParam{
+						OfInputItemContentList: parts,
+					},
 				},
-			},
-		})
+			})
+		case "assistant":
+			parts := buildResponsesInputParts(msg)
+			if len(parts) == 0 {
+				continue
+			}
+			items = append(items, responses.ResponseInputItemUnionParam{
+				OfMessage: &responses.EasyInputMessageParam{
+					Role: responses.EasyInputMessageRoleAssistant,
+					Content: responses.EasyInputMessageContentUnionParam{
+						OfInputItemContentList: parts,
+					},
+				},
+			})
+		case "system", "developer":
+			parts := buildResponsesInputParts(msg)
+			if len(parts) == 0 {
+				continue
+			}
+			items = append(items, responses.ResponseInputItemUnionParam{
+				OfMessage: &responses.EasyInputMessageParam{
+					Role: responses.EasyInputMessageRoleDeveloper,
+					Content: responses.EasyInputMessageContentUnionParam{
+						OfInputItemContentList: parts,
+					},
+				},
+			})
+		case "tool":
+			// Tool results: include as user message with text content.
+			// The Responses API EasyInputMessage doesn't have a tool role.
+			parts := buildResponsesInputParts(msg)
+			if len(parts) == 0 {
+				continue
+			}
+			items = append(items, responses.ResponseInputItemUnionParam{
+				OfMessage: &responses.EasyInputMessageParam{
+					Role: responses.EasyInputMessageRoleUser,
+					Content: responses.EasyInputMessageContentUnionParam{
+						OfInputItemContentList: parts,
+					},
+				},
+			})
+		default:
+			// Unknown roles: map to user
+			parts := buildResponsesInputParts(msg)
+			if len(parts) == 0 {
+				continue
+			}
+			items = append(items, responses.ResponseInputItemUnionParam{
+				OfMessage: &responses.EasyInputMessageParam{
+					Role: responses.EasyInputMessageRoleUser,
+					Content: responses.EasyInputMessageContentUnionParam{
+						OfInputItemContentList: parts,
+					},
+				},
+			})
+		}
 	}
 	return items
 }
